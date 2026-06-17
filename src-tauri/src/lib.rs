@@ -206,6 +206,35 @@ pub fn run() {
             optimize,
             reload_from_dump,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // 終了時に WinDivert を確実に解放する（recv を中断→ハンドルを閉じる→
+            // ドライバサービスを停止/削除）。これを怠ると .sys が残存ロックし、
+            // 次回起動やビルド（.sys のコピー）を妨げる。
+            if let tauri::RunEvent::Exit = event {
+                cleanup_windivert();
+            }
+        });
+}
+
+/// 終了時の WinDivert 解放。Windows 以外では no-op。
+fn cleanup_windivert() {
+    #[cfg(target_os = "windows")]
+    {
+        use bpsr_core::capture::windivert;
+        windivert::request_shutdown();
+        // recv ループがハンドルを閉じるのを最大 ~1s 待つ。
+        for _ in 0..50 {
+            if windivert::is_handle_closed() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if let Err(e) = windivert::force_uninstall_service() {
+            log::warn!("WinDivert 終了時クリーンアップ失敗: {e}");
+        } else {
+            log::info!("WinDivert を解放しました");
+        }
+    }
 }
