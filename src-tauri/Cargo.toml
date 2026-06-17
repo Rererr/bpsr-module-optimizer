@@ -1,6 +1,6 @@
 [package]
 name = "bpsr-module-optimizer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Star Resonance モジュール最適化ツール（所持モジュールから戦闘力スコア最大の4枠を探索）"
 authors = ["Rererr"]
 edition = "2021"
@@ -17,6 +17,7 @@ name = "bpsr_module_optimizer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+embed-manifest = "1.4"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -29,4 +30,3 @@ tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] 
 prost = "0.14"
 log = "0.4"
 env_logger = "0.11"
-
