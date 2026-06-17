@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package pb;
+
+enum DmgKind {
+  Normal = 0;
+  Miss = 1;
+  Heal = 2;
+}
+
+enum EntityKind {
+  Unknown = 0;
+  Monster = 1;
+  Player = 10;
+}
+
+message RawAttr {
+  int32 id = 1;
+  bytes raw_data = 2;
+}
+
+message EntityAttrs {
+  int64 uuid = 1;
+  repeated RawAttr attrs = 2;
+}
+
+// SceneDelta.effects(field 3) の要素
+// duration_ms: 0/未設定=無期限、-1=永続、>0=ミリ秒の持続時間
+message TimedEffect {
+  int64 id = 1;
+  int64 activated_at = 2;
+  int64 duration_ms = 3;
+  int64 flag = 4;
+  int64 extra = 5;
+}
+
+// buff_list の 1 要素 (= ZDPS の BuffEffect)。
+// event_type は EBuffEventType (1=AddTo, 2=Remove, 4=Timer, 5=StackLayer …)、
+// buff_uuid は対象バフのインスタンスキー、body_raw は LogicEffect (= BuffPayload) の bytes。
+message BuffEvent {
+  int32 event_type = 1;
+  int32 buff_uuid = 2;
+  int64 host_uuid = 3;
+  bytes body_raw = 5;
+}
+
+message BuffEventBatch {
+  repeated BuffEvent buffs = 2;
+}
+
+// BuffEvent.body_raw をラップ (= BuffEffectLogicInfo)。
+// buff_type は EffectType (18=AddBuff→BuffSnapshot / 19=BuffChange)。
+// detail_raw は型ごとにアプリ側でデコードする。
+message BuffPayload {
+  int32 buff_type = 1;
+  bytes detail_raw = 2;
+}
+
+// LogicEffect.EffectType==19 (BuffChange) の RawData。スタック増加/タイマー更新を表す。
+// base_id を持たず、対象は BuffEvent.buff_uuid で識別する。
+message BuffChange {
+  int32 layer = 1;
+  int64 duration = 2;
+  int64 create_time = 3;
+}
+
+message SceneDelta {
+  int64 uuid = 1;
+  EntityAttrs attrs = 2;
+  BuffEventBatch buff_list = 10;
+  SkillImpact skill_effects = 7;
+}
+
+message LocalSceneDelta {
+  SceneDelta base_delta = 1;
+  repeated TimedEffect effects = 3;
+  int64 uuid = 5;
+}
+
+message PlayerProfile {
+  int64 char_id = 1;
+  string account_id = 2;
+  string name = 5;
+  int32 fight_point = 35;
+}
+
+message PlayerSnapshot {
+  int64 char_id = 1;
+  PlayerProfile char_base = 2;
+  WorldLocation scene_data = 3;
+  InvBags item_package = 7;
+  ModuleSet mod = 57;
+  ClassState profession_list = 61;
+}
+
+message EntityVanish { int64 uuid = 1; }
+
+message EntityAppear {
+  int64 uuid = 1;
+  EntityKind ent_type = 2;
+  EntityAttrs attrs = 3;
+}
+
+message InvItem {
+  int64 uuid = 1;
+  int32 config_id = 2;
+  int32 quality = 9;
+  ModuleAttrs mod_new_attr = 13;
+}
+
+message InvBags { map<int32, InvBag> packages = 1; }
+
+message ModuleSet { map<int64, ModuleEntry> mod_infos = 2; }
+
+message ModuleEntry { repeated int32 init_link_nums = 4; }
+
+message ModuleAttrs { repeated int32 mod_parts = 1; }
+
+message SocialEnvelope { SocialRequest v_request = 1; }
+
+message SocialRequest { SocialBody data = 1; }
+
+message InvBag { map<int64, InvItem> items = 4; }
+
+message ClassState { int32 cur_profession_id = 1; }
+
+message WorldLocation {
+  uint32 level_map_id = 6;
+  uint32 line_id = 15;
+}
+
+message SkillImpact { repeated DamageRecord damages = 2; }
+
+message SocialBody { WorldLocation scene_data = 10; }
+
+message WorldEnterSnapshot { PlayerSnapshot v_data = 1; }
+
+message DamageRecord {
+  bool is_miss = 2;
+  DmgKind type = 4;
+  int32 type_flag = 5;
+  int64 value = 6;
+  int64 lucky_value = 8;
+  int64 hp_lessen_value = 9;
+  int64 attacker_uuid = 11;
+  int32 owner_id = 12;
+  bool is_dead = 17;
+  int32 property = 18;
+  int64 top_summoner_id = 21;
+  int32 damage_mode = 25;
+}
+
+message WorldDeltaBatch { repeated SceneDelta delta_infos = 1; }
+
+message WorldEntityBatch {
+  repeated EntityAppear appear = 1;
+  repeated EntityVanish disappear = 2;
+}
+
+message LocalDeltaBatch { LocalSceneDelta delta_info = 1; }
+
+message Vec3f {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message CombatOrigin {
+  int32 fight_source_type = 1;
+  int32 source_config_id = 2;
+}
+
+message BuffSnapshot {
+  int32 buff_uuid = 1;
+  int32 base_id = 2;
+  int32 level = 3;
+  int64 host_uuid = 4;
+  int32 table_uuid = 5;
+  int64 create_time = 6;
+  int64 fire_uuid = 7;
+  int32 layer = 8;
+  int32 part_id = 9;
+  int32 count = 10;
+  int32 duration = 11;
+  CombatOrigin fight_source_info = 12;
+}
+
+message BuffSnapshotBundle {
+  int64 uuid = 1;
+  repeated BuffSnapshot buff_infos = 2;
+}
+
+message BuffTick {
+  int64 host_uuid = 1;
+  int32 buff_uuid = 2;
+  int32 base_id = 3;
+  int64 duration = 4;
+  int64 create_time = 5;
+  int32 layer = 6;
+}
