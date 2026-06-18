@@ -12,16 +12,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # arduino/setup-protoc は Node 20 ランタイムで非推奨警告が出るため、
+      # Windows ランナー標準の Chocolatey で protoc を導入する。
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: choco install protoc -y --no-progress
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
 
