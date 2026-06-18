@@ -231,10 +231,9 @@ fn cleanup_windivert() {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        if let Err(e) = windivert::force_uninstall_service() {
-            log::warn!("WinDivert 終了時クリーンアップ失敗: {e}");
-        } else {
-            log::info!("WinDivert を解放しました");
-        }
+        // 共有 "WinDivert" サービスは他アプリと共用するため削除しない（善良な利用者）。
+        // dev ビルドのみ、ドライバを STOP して `.sys` ロックを解放する（release は no-op）。
+        windivert::stop_driver_for_dev();
+        log::info!("WinDivert capture を停止しました");
     }
 }
