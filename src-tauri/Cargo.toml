@@ -17,7 +17,6 @@ name = "bpsr_module_optimizer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-embed-manifest = "1.4"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
