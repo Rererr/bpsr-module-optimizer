@@ -3,6 +3,7 @@
 
 mod attrs;
 mod capture;
+mod elevation;
 mod optimizer;
 mod state;
 
@@ -77,9 +78,17 @@ fn load_dump(path: &PathBuf) -> Result<Vec<Module>, String> {
     Ok(dump.into_iter().map(Module::from).collect())
 }
 
+/// モジュールを JSON でパスへ書き出す（取得時の自動保存で使用）。
+/// 出力は `DumpModule` が読み戻せる形（`category` 余剰フィールドは読込側で無視される）。
+pub(crate) fn write_dump(path: &PathBuf, modules: &[Module]) -> Result<(), String> {
+    let json =
+        serde_json::to_string_pretty(modules).map_err(|e| format!("JSON 変換失敗: {e}"))?;
+    std::fs::write(path, json).map_err(|e| format!("保存失敗 {}: {e}", path.display()))
+}
+
 /// 既定のダンプパス。env `BPSR_MODULE_DUMP` 優先、なければ exe と同じディレクトリの
 /// `owned_modules.json`（存在しなければ事前読込はスキップされ、ライブ取得のみで動作する）。
-fn default_dump_path() -> PathBuf {
+pub(crate) fn default_dump_path() -> PathBuf {
     if let Some(p) = std::env::var_os("BPSR_MODULE_DUMP") {
         return PathBuf::from(p);
     }
@@ -173,6 +182,10 @@ fn reload_from_dump(state: tauri::State<SharedState>, path: Option<String>) -> R
 pub fn run() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
+
+    // ライブキャプチャ（WinDivert）は管理者権限を要求する。未昇格なら自己再起動で昇格する。
+    // 昇格に失敗した場合（UAC 拒否含む）は本プロセスは終了する。
+    elevation::ensure_elevated();
 
     let shared = state::new();
 

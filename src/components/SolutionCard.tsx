@@ -4,8 +4,10 @@ import { CATEGORY_LABELS } from "../types";
 
 interface Props {
   solution: Solution;
-  rank: number;
   targetIds: Set<number>;
+  rank?: number; // 省略時はランクバッジ非表示（お気に入り表示で使用）
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void; // 指定時のみ★トグルを表示
 }
 
 function qualityColor(q: number): string {
@@ -49,19 +51,27 @@ function levelTextColor(level: number, selected: boolean): string {
   return selected ? "text-emerald-300" : "text-slate-300";
 }
 
-export function SolutionCard({ solution, rank, targetIds }: Props) {
+export function SolutionCard({
+  solution,
+  targetIds,
+  rank,
+  isFavorite,
+  onToggleFavorite,
+}: Props) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 transition hover:border-slate-700">
-      {/* ヘッダ: ランク + Lv分布 + リンク効果 */}
+      {/* ヘッダ: ランク + Lv分布 + お気に入り + リンク効果 */}
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span
-            className={`flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-xs font-bold ${rankColor(
-              rank,
-            )}`}
-          >
-            {rank === 1 ? <Trophy size={13} /> : `#${rank}`}
-          </span>
+          {rank !== undefined && (
+            <span
+              className={`flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-xs font-bold ${rankColor(
+                rank,
+              )}`}
+            >
+              {rank === 1 ? <Trophy size={13} /> : `#${rank}`}
+            </span>
+          )}
           <span className="flex items-center gap-1.5 text-xs">
             <span className="rounded bg-amber-400/15 px-1.5 py-0.5 font-semibold text-amber-300">
               Lv6 ×{solution.lv6_count}
@@ -77,11 +87,31 @@ export function SolutionCard({ solution, rank, targetIds }: Props) {
             )}
           </span>
         </div>
-        <div className="text-right leading-none">
-          <div className="text-2xl font-bold tabular-nums text-slate-100">
-            {solution.link_effect}
+        <div className="flex items-center gap-2">
+          {onToggleFavorite && (
+            <button
+              onClick={onToggleFavorite}
+              aria-label={isFavorite ? "お気に入りから削除" : "お気に入りに追加"}
+              title={isFavorite ? "お気に入りから削除" : "お気に入りに追加"}
+              aria-pressed={isFavorite}
+              className="rounded-md p-1 transition hover:bg-slate-800"
+            >
+              <Star
+                size={16}
+                className={
+                  isFavorite
+                    ? "fill-amber-400 text-amber-400"
+                    : "text-slate-500 hover:text-amber-300"
+                }
+              />
+            </button>
+          )}
+          <div className="text-right leading-none">
+            <div className="text-2xl font-bold tabular-nums text-slate-100">
+              {solution.link_effect}
+            </div>
+            <div className="text-[10px] text-slate-500">リンク効果</div>
           </div>
-          <div className="text-[10px] text-slate-500">リンク効果</div>
         </div>
       </div>
 
@@ -130,7 +160,6 @@ export function SolutionCard({ solution, rank, targetIds }: Props) {
                         ? "bg-emerald-500/20 font-semibold text-emerald-200"
                         : "bg-slate-800/60 text-slate-400"
                     }`}
-                    title={`id=${p.attr_id}`}
                   >
                     {p.attr_name} +{p.value}
                   </span>

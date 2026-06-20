@@ -1,35 +1,70 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Sparkles, Loader2, PackageOpen } from "lucide-react";
+import { Sparkles, Loader2, PackageOpen, Star } from "lucide-react";
 import {
   captureStatus,
   getAttributes,
   optimize,
   reloadFromDump,
 } from "./api";
-import type { AttrMeta, OptimizeResult, StatusDto } from "./types";
+import type {
+  AttrMeta,
+  AttrState,
+  OptimizeResult,
+  SearchPreset,
+  StatusDto,
+} from "./types";
 import { CATEGORY_LABELS } from "./types";
+import { STORAGE_KEYS, loadJSON, saveJSON } from "./storage";
+import { usePresets } from "./hooks/usePresets";
+import { useFavorites } from "./hooks/useFavorites";
 import { StatusBar } from "./components/StatusBar";
-import { AttributePicker, type AttrState } from "./components/AttributePicker";
+import { AttributePicker } from "./components/AttributePicker";
 import { RequirementList } from "./components/RequirementList";
 import { SolutionCard } from "./components/SolutionCard";
+import { PresetBar } from "./components/PresetBar";
+import { ConditionSummary } from "./components/ConditionSummary";
+import { FavoritesPanel } from "./components/FavoritesPanel";
 
 const CATEGORIES = ["all", "attack", "guardian", "support"];
 const TOP_K_OPTIONS = [3, 5, 10];
 
+// 再起動時に復元する検索条件。
+interface LastSearch {
+  selection: Record<number, AttrState>;
+  requireLevels: Record<number, number>;
+  category: string;
+  topK: number;
+}
+
+type Tab = "results" | "favorites";
+
 export default function App() {
   const [attributes, setAttributes] = useState<AttrMeta[]>([]);
-  const [selection, setSelection] = useState<Record<number, AttrState>>({});
-  const [category, setCategory] = useState<string>("all");
-  const [topK, setTopK] = useState<number>(5);
-  // 属性ごとの下限レベル（attr_id -> level、0/未設定=制約なし）。
-  const [requireLevels, setRequireLevels] = useState<Record<number, number>>({});
 
+  // 最後の検索条件を1度だけ読み込み、各状態の初期値に使う。
+  const [restored] = useState<Partial<LastSearch>>(() =>
+    loadJSON<Partial<LastSearch>>(STORAGE_KEYS.lastSearch, {}),
+  );
+  const [selection, setSelection] = useState<Record<number, AttrState>>(
+    () => restored.selection ?? {},
+  );
+  const [category, setCategory] = useState<string>(() => restored.category ?? "all");
+  const [topK, setTopK] = useState<number>(() => restored.topK ?? 5);
+  // 属性ごとの下限レベル（attr_id -> level、0/未設定=制約なし）。
+  const [requireLevels, setRequireLevels] = useState<Record<number, number>>(
+    () => restored.requireLevels ?? {},
+  );
+
+  const [tab, setTab] = useState<Tab>("results");
   const [status, setStatus] = useState<StatusDto | null>(null);
   const [result, setResult] = useState<OptimizeResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const presets = usePresets();
+  const favorites = useFavorites();
 
   const targetIds = useMemo(
     () =>
@@ -51,6 +86,16 @@ export default function App() {
     [attributes, selection],
   );
 
+  // 検索条件を localStorage に永続化（再起動時の自動復元用）。
+  useEffect(() => {
+    saveJSON<LastSearch>(STORAGE_KEYS.lastSearch, {
+      selection,
+      requireLevels,
+      category,
+      topK,
+    });
+  }, [selection, requireLevels, category, topK]);
+
   const refreshStatus = useCallback(() => {
     captureStatus().then(setStatus).catch(() => {});
   }, []);
@@ -58,38 +103,57 @@ export default function App() {
   // 最新の探索条件を ref に保持（イベント購読クロージャから参照するため）。
   const runRef = useRef<() => void>(() => {});
 
-  const runOptimize = useCallback(async () => {
-    // 目標未選択でも可（その場合は全体で Lv6数→リンク効果 最大の構成を出す）。
-    setError(null);
-    setLoading(true);
-    try {
-      const requirements = targetIds
-        .map((id) => [id, requireLevels[id] ?? 0] as [number, number])
-        .filter(([, lv]) => lv > 0);
-      const res = await optimize({
-        selectedIds: targetIds,
-        category: category === "all" ? null : category,
-        excludeIds,
-        requirements,
-        topK,
-      });
-      setResult(res);
-      if (res.solutions.length === 0) {
-        setError(
-          res.candidate_count < 4
-            ? `候補モジュールが ${res.candidate_count} 件で4枠に満たません（条件を緩めてください）`
-            : requirements.length > 0
-              ? "指定した下限Lvをすべて満たす組み合わせがありません（下限を下げるか属性を減らしてください）"
-              : "条件に合う組み合わせがありません",
-        );
+  // 明示的に渡した条件で探索する（プリセット適用・条件解除でも再利用）。
+  const runWith = useCallback(
+    async (
+      sel: Record<number, AttrState>,
+      reqLevels: Record<number, number>,
+      cat: string,
+      k: number,
+    ) => {
+      setError(null);
+      setLoading(true);
+      try {
+        const tIds = Object.entries(sel)
+          .filter(([, s]) => s === "target")
+          .map(([id]) => Number(id));
+        const eIds = Object.entries(sel)
+          .filter(([, s]) => s === "exclude")
+          .map(([id]) => Number(id));
+        const requirements = tIds
+          .map((id) => [id, reqLevels[id] ?? 0] as [number, number])
+          .filter(([, lv]) => lv > 0);
+        const res = await optimize({
+          selectedIds: tIds,
+          category: cat === "all" ? null : cat,
+          excludeIds: eIds,
+          requirements,
+          topK: k,
+        });
+        setResult(res);
+        if (res.solutions.length === 0) {
+          setError(
+            res.candidate_count < 4
+              ? `候補モジュールが ${res.candidate_count} 件で4枠に満たません（条件を緩めてください）`
+              : requirements.length > 0
+                ? "指定した下限Lvをすべて満たす組み合わせがありません（下限を下げるか属性を減らしてください）"
+                : "条件に合う組み合わせがありません",
+          );
+        }
+      } catch (e) {
+        setError(String(e));
+        setResult(null);
+      } finally {
+        setLoading(false);
       }
-    } catch (e) {
-      setError(String(e));
-      setResult(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [targetIds, excludeIds, category, topK, requireLevels]);
+    },
+    [],
+  );
+
+  const runOptimize = useCallback(
+    () => runWith(selection, requireLevels, category, topK),
+    [runWith, selection, requireLevels, category, topK],
+  );
 
   useEffect(() => {
     runRef.current = runOptimize;
@@ -131,6 +195,31 @@ export default function App() {
   const setReqLevel = (id: number, level: number) =>
     setRequireLevels((prev) => ({ ...prev, [id]: level }));
 
+  // サマリーバーから目標/除外を1つ解除して即再探索。
+  const removeAttr = (id: number) => {
+    const next = { ...selection };
+    delete next[id];
+    setSelection(next);
+    runWith(next, requireLevels, category, topK);
+  };
+
+  const resetCategory = () => {
+    setCategory("all");
+    runWith(selection, requireLevels, "all", topK);
+  };
+
+  const applyPreset = (p: SearchPreset) => {
+    setSelection(p.selection);
+    setRequireLevels(p.requireLevels);
+    setCategory(p.category);
+    setTopK(p.topK);
+    setTab("results");
+    runWith(p.selection, p.requireLevels, p.category, p.topK);
+  };
+
+  const savePreset = (name: string) =>
+    presets.save(name, { selection, requireLevels, category, topK });
+
   const onReloadDump = async () => {
     setBusy(true);
     setError(null);
@@ -146,6 +235,9 @@ export default function App() {
   };
 
   const noModules = (status?.module_count ?? 0) === 0;
+  const canSave =
+    targetIds.length > 0 || excludeIds.length > 0 || category !== "all";
+  const favCount = favorites.favorites.length;
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
@@ -154,6 +246,19 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         {/* 左サイドバー: 条件設定 */}
         <aside className="flex w-[360px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-slate-800 bg-slate-900/30 p-5">
+          <section>
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+              プリセット
+            </h2>
+            <PresetBar
+              presets={presets.presets}
+              onApply={applyPreset}
+              onSave={savePreset}
+              onDelete={presets.remove}
+              canSave={canSave}
+            />
+          </section>
+
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
               属性を選択
@@ -220,7 +325,10 @@ export default function App() {
           </section>
 
           <button
-            onClick={runOptimize}
+            onClick={() => {
+              setTab("results");
+              runOptimize();
+            }}
             disabled={loading || noModules}
             className="mt-auto flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
           >
@@ -233,59 +341,112 @@ export default function App() {
           </button>
         </aside>
 
-        {/* メイン: 結果 */}
+        {/* メイン: タブ（結果 / お気に入り） */}
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
-          {error && (
-            <div className="mb-4 rounded-lg border border-amber-700/50 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
-              {error}
-            </div>
-          )}
+          <div className="mb-3 flex items-center gap-1 rounded-lg bg-slate-800/60 p-1 w-fit">
+            <button
+              onClick={() => setTab("results")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                tab === "results"
+                  ? "bg-indigo-500 text-white shadow"
+                  : "text-slate-300 hover:bg-slate-700/60"
+              }`}
+            >
+              結果
+            </button>
+            <button
+              onClick={() => setTab("favorites")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                tab === "favorites"
+                  ? "bg-indigo-500 text-white shadow"
+                  : "text-slate-300 hover:bg-slate-700/60"
+              }`}
+            >
+              <Star
+                size={12}
+                className={favCount > 0 ? "fill-amber-400 text-amber-400" : ""}
+              />
+              お気に入り
+              {favCount > 0 && (
+                <span className="rounded-full bg-slate-900/60 px-1.5 text-[10px] tabular-nums">
+                  {favCount}
+                </span>
+              )}
+            </button>
+          </div>
 
-          {result && result.solutions.length > 0 && (
-            <div className="mb-3 flex items-center justify-between text-xs text-slate-400">
-              <span>
-                上位 {result.solutions.length} セット
-                <span className="text-slate-600"> / </span>
-                候補 {result.candidate_count} 件から{" "}
-                {result.combinations.toLocaleString()} 通りを探索
-              </span>
-            </div>
-          )}
+          {tab === "results" ? (
+            <>
+              {error && (
+                <div className="mb-4 rounded-lg border border-amber-700/50 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+                  {error}
+                </div>
+              )}
 
-          {result && result.solutions.length > 0 ? (
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-              {result.solutions.map((s, i) => (
-                <SolutionCard
-                  key={i}
-                  solution={s}
-                  rank={i + 1}
-                  targetIds={targetSet}
-                />
-              ))}
-            </div>
+              <ConditionSummary
+                attributes={attributes}
+                selection={selection}
+                requireLevels={requireLevels}
+                category={category}
+                onRemoveAttr={removeAttr}
+                onResetCategory={resetCategory}
+              />
+
+              {result && result.solutions.length > 0 && (
+                <div className="mb-3 flex items-center justify-between text-xs text-slate-400">
+                  <span>
+                    上位 {result.solutions.length} セット
+                    <span className="text-slate-600"> / </span>
+                    候補 {result.candidate_count} 件から{" "}
+                    {result.combinations.toLocaleString()} 通りを探索
+                  </span>
+                </div>
+              )}
+
+              {result && result.solutions.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                  {result.solutions.map((s, i) => (
+                    <SolutionCard
+                      key={i}
+                      solution={s}
+                      rank={i + 1}
+                      targetIds={targetSet}
+                      isFavorite={favorites.isFavorite(s)}
+                      onToggleFavorite={() => favorites.toggle(s)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                !error && (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-500">
+                    <PackageOpen size={48} className="opacity-40" />
+                    {noModules ? (
+                      <div>
+                        <p className="text-sm">所持モジュール未取得</p>
+                        <p className="mt-1 text-xs">
+                          管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-sm">
+                          目標属性を選んで「最適化を実行」を押してください
+                        </p>
+                        <p className="mt-1 text-xs">
+                          所持 {status?.module_count ?? 0} 件から最良の4枠を探索します
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )
+              )}
+            </>
           ) : (
-            !error && (
-              <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-500">
-                <PackageOpen size={48} className="opacity-40" />
-                {noModules ? (
-                  <div>
-                    <p className="text-sm">所持モジュール未取得</p>
-                    <p className="mt-1 text-xs">
-                      管理者権限でゲームのマップ移動 or「ダンプ再読込」で取得してください
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="text-sm">
-                      目標属性を選んで「最適化を実行」を押してください
-                    </p>
-                    <p className="mt-1 text-xs">
-                      所持 {status?.module_count ?? 0} 件から最良の4枠を探索します
-                    </p>
-                  </div>
-                )}
-              </div>
-            )
+            <FavoritesPanel
+              favorites={favorites.favorites}
+              onRename={favorites.rename}
+              onRemove={favorites.remove}
+            />
           )}
         </main>
       </div>
