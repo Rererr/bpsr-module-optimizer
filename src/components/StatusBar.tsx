@@ -87,10 +87,10 @@ export function StatusBar({ status, onReloadDump, busy }: Props) {
           onClick={onReloadDump}
           disabled={busy}
           className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
-          title="owned_modules.json を再読込"
+          title="保存した owned_modules.json を読み込む"
         >
           <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
-          ダンプ再読込
+          保存データから読込
         </button>
       </div>
     </header>

@@ -1,6 +1,6 @@
-import type { AttrMeta } from "../types";
+import type { AttrMeta, AttrState } from "../types";
 
-export type AttrState = "none" | "target" | "exclude";
+export type { AttrState };
 
 interface Props {
   attributes: AttrMeta[];
@@ -85,7 +85,6 @@ export function AttributePicker({ attributes, selection, onCycle, onClear }: Pro
                       st,
                       a.special,
                     )}`}
-                    title={`id=${a.id}`}
                   >
                     {a.name}
                   </button>

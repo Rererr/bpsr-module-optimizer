@@ -1,5 +1,8 @@
 // Rust DTO に対応する型定義。
 
+// 属性の選択状態。AttributePicker / App / プリセットで共有するドメイン型。
+export type AttrState = "none" | "target" | "exclude";
+
 export interface AttrMeta {
   id: number;
   name: string;
@@ -65,3 +68,23 @@ export const CATEGORY_LABELS: Record<string, string> = {
 
 // 属性レベルの閾値境界（属性値 → Lv0〜6）。UI のレベル表示に使う。
 export const ATTR_THRESHOLDS = [1, 4, 8, 12, 16, 20];
+
+// 検索条件のプリセット（localStorage に保存）。
+export interface SearchPreset {
+  id: string;
+  name: string;
+  selection: Record<number, AttrState>;
+  requireLevels: Record<number, number>;
+  category: string;
+  topK: number;
+  createdAt: number;
+}
+
+// お気に入りに保存した4枠構成（解候補のスナップショット）。
+export interface SavedBuild {
+  id: string; // buildIdOf(solution): 4モジュール uuid を昇順連結
+  name: string; // 既定は自動命名、ユーザー編集可
+  solution: Solution; // 保存時点の値（モジュール集合が変わっても保持）
+  targetIds: number[]; // 保存時の目標属性。カード内の該当パーツ強調を再現
+  savedAt: number;
+}

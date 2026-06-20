@@ -1,6 +1,6 @@
 [package]
 name = "bpsr-module-optimizer"
-version = "0.1.2"
+version = "0.2.0"
 description = "Star Resonance モジュール最適化ツール（所持モジュールから戦闘力スコア最大の4枠を探索）"
 authors = ["Rererr"]
 edition = "2021"
@@ -29,3 +29,13 @@ tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] 
 prost = "0.14"
 log = "0.4"
 env_logger = "0.11"
+
+# 実行時自己昇格（管理者へ runas で再起動）に使用。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
