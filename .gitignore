@@ -25,3 +25,6 @@ dist-ssr
 
 # Vendored crate build output (if ever built in place)
 /bpsr-core/target/
+
+# 内部・非公開の作業資料（宣伝下書き・戦略メモ等。ローカル管理・非コミット）
+docs-private/

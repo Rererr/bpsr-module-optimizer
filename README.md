@@ -1,5 +1,7 @@
 # bpsr-module-optimizer
 
+**[日本語](./README.md) | [English](./README.en.md)**
+
 **Blue Protocol: Star Resonance（星痕）向け モジュール最適化ツール (Windows 専用)**
 
 [![Latest release](https://img.shields.io/github/v/release/Rererr/bpsr-module-optimizer?display_name=tag&sort=semver)](https://github.com/Rererr/bpsr-module-optimizer/releases)
@@ -63,6 +65,8 @@
 ### ウイルスではないですか? ウイルス対策ソフトに検出されました
 
 **誤検知です。** カーネルレベルでパケットをキャプチャする [WinDivert](https://www.reqrypt.org/windivert.html) ドライバを同梱しているため、一部のウイルス対策ソフトが「ネットワーク監視ツール」として警告を出すことがあります。
+
+例えば VirusTotal では Kaspersky が `Not-a-virus:HEUR:RiskTool.Multi.WinDivert.gen` と表示することがありますが、これは同梱の WinDivert ドライバを「リスクツール（ネットワークツール）」として分類しているもので、**マルウェアではありません**（検出名の先頭が `Not-a-virus` であることに注目してください）。
 
 対処:
 - WinDivert ドライバ（`WinDivert.dll`, `WinDivert64.sys`）およびインストールフォルダをウイルス対策ソフトの除外設定に追加してください。
