@@ -1,6 +1,7 @@
 import { X, ArrowUp } from "lucide-react";
 import type { SavedBuild } from "../types";
 import { BuildFingerprint } from "./BuildFingerprint";
+import { useI18n } from "../i18n";
 
 interface Props {
   builds: SavedBuild[]; // 2〜3件
@@ -33,16 +34,18 @@ function isWinner(values: number[], v: number): boolean {
 }
 
 export function BuildCompare({ builds, onClose }: Props) {
+  const { t, attrName } = useI18n();
   // 属性の和集合。各ビルドの breakdown を attr_id で索引化する。
   const perBuild = builds.map(
     (b) => new Map(b.solution.breakdown.map((x) => [x.attr_id, x])),
   );
-  const nameOf = new Map<number, string>();
+  const fallbackName = new Map<number, string>();
   for (const b of builds)
-    for (const x of b.solution.breakdown) nameOf.set(x.attr_id, x.attr_name);
+    for (const x of b.solution.breakdown) fallbackName.set(x.attr_id, x.attr_name);
+  const nameOf = (id: number) => attrName(id, fallbackName.get(id) ?? `#${id}`);
 
   // 最大レベル降順 → attr_id 昇順で属性行を並べる。
-  const attrIds = [...nameOf.keys()].sort((a, b) => {
+  const attrIds = [...fallbackName.keys()].sort((a, b) => {
     const la = Math.max(...perBuild.map((m) => m.get(a)?.level ?? 0));
     const lb = Math.max(...perBuild.map((m) => m.get(b)?.level ?? 0));
     return lb - la || a - b;
@@ -86,14 +89,14 @@ export function BuildCompare({ builds, onClose }: Props) {
     <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-bold text-slate-100">
-          ビルド比較（{builds.length}件）
+          {t("compare.title", { n: builds.length })}
         </h3>
         <button
           onClick={onClose}
           className="flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:bg-slate-800"
         >
           <X size={13} />
-          閉じる
+          {t("common.close")}
         </button>
       </div>
 
@@ -116,17 +119,17 @@ export function BuildCompare({ builds, onClose }: Props) {
           </div>
         ))}
 
-        {metric("link", "リンク効果", (b) => b.solution.link_effect)}
-        {metric("lv6", "Lv6数", (b) => b.solution.lv6_count)}
-        {metric("lv5", "Lv5数", (b) => b.solution.lv5_count)}
+        {metric("link", t("card.linkEffect"), (b) => b.solution.link_effect)}
+        {metric("lv6", t("compare.lv6"), (b) => b.solution.lv6_count)}
+        {metric("lv5", t("compare.lv5"), (b) => b.solution.lv5_count)}
 
         {/* 属性行（和集合） */}
         {attrIds.map((id) => {
           const levels = perBuild.map((m) => m.get(id)?.level ?? 0);
           return (
             <div key={`a-${id}`} className="contents">
-              <div className={`${label} truncate`} title={nameOf.get(id)}>
-                {nameOf.get(id)}
+              <div className={`${label} truncate`} title={nameOf(id)}>
+                {nameOf(id)}
               </div>
               {perBuild.map((m, i) => {
                 const bd = m.get(id);

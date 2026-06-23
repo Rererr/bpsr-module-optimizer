@@ -1,5 +1,6 @@
-import { RefreshCw, Radio, FileJson, CircleAlert } from "lucide-react";
+import { RefreshCw, Radio, FileJson, CircleAlert, Languages } from "lucide-react";
 import type { StatusDto } from "../types";
+import { useI18n } from "../i18n";
 
 interface Props {
   status: StatusDto | null;
@@ -18,27 +19,29 @@ function stateColor(s: StatusDto["capture_state"]): string {
   }
 }
 
-function stateLabel(s: StatusDto["capture_state"]): string {
-  switch (s) {
-    case "running":
-      return "キャプチャ稼働中";
-    case "failed":
-      return "キャプチャ失敗(要管理者権限)";
-    default:
-      return "キャプチャ待機";
-  }
-}
-
-function ago(ms: number | null): string {
-  if (ms == null) return "未取得";
-  const d = Date.now() - ms;
-  if (d < 1000) return "たった今";
-  if (d < 60000) return `${Math.floor(d / 1000)}秒前`;
-  if (d < 3600000) return `${Math.floor(d / 60000)}分前`;
-  return `${Math.floor(d / 3600000)}時間前`;
-}
-
 export function StatusBar({ status, onReloadDump, busy }: Props) {
+  const { t, lang, setLang } = useI18n();
+
+  const stateLabel = (s: StatusDto["capture_state"]): string => {
+    switch (s) {
+      case "running":
+        return t("status.running");
+      case "failed":
+        return t("status.failed");
+      default:
+        return t("status.waiting");
+    }
+  };
+
+  const ago = (ms: number | null): string => {
+    if (ms == null) return t("time.never");
+    const d = Date.now() - ms;
+    if (d < 1000) return t("time.now");
+    if (d < 60000) return t("time.secAgo", { n: Math.floor(d / 1000) });
+    if (d < 3600000) return t("time.minAgo", { n: Math.floor(d / 60000) });
+    return t("time.hourAgo", { n: Math.floor(d / 3600000) });
+  };
+
   return (
     <header className="flex items-center justify-between gap-4 border-b border-slate-800 bg-slate-900/60 px-5 py-3 backdrop-blur">
       <div className="flex items-center gap-3">
@@ -47,11 +50,9 @@ export function StatusBar({ status, onReloadDump, busy }: Props) {
         </div>
         <div>
           <h1 className="text-sm font-bold tracking-wide text-slate-100">
-            BPSR モジュール最適化
+            {t("app.title")}
           </h1>
-          <p className="text-[11px] text-slate-400">
-            Lv6を優先しリンク効果が最大になる4枠を探索
-          </p>
+          <p className="text-[11px] text-slate-400">{t("app.subtitle")}</p>
         </div>
       </div>
 
@@ -78,7 +79,7 @@ export function StatusBar({ status, onReloadDump, busy }: Props) {
           <span className="font-semibold text-slate-200">
             {status?.module_count ?? 0}
           </span>
-          <span>件</span>
+          <span>{t("status.modulesUnit")}</span>
           <span className="text-slate-600">·</span>
           <span>{ago(status?.last_update_ms ?? null)}</span>
         </div>
@@ -87,10 +88,20 @@ export function StatusBar({ status, onReloadDump, busy }: Props) {
           onClick={onReloadDump}
           disabled={busy}
           className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
-          title="保存した owned_modules.json を読み込む"
+          title={t("status.reloadTitle")}
         >
           <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
-          保存データから読込
+          {t("status.reload")}
+        </button>
+
+        <button
+          onClick={() => setLang(lang === "ja" ? "en" : "ja")}
+          aria-label={t("lang.switch")}
+          title={t("lang.switch")}
+          className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-semibold text-slate-200 transition hover:bg-slate-700"
+        >
+          <Languages size={13} />
+          {lang === "ja" ? "EN" : "日本語"}
         </button>
       </div>
     </header>

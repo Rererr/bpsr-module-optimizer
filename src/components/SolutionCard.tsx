@@ -1,6 +1,6 @@
 import { Trophy, Star } from "lucide-react";
 import type { Solution } from "../types";
-import { CATEGORY_LABELS } from "../types";
+import { useI18n } from "../i18n";
 
 interface Props {
   solution: Solution;
@@ -58,6 +58,7 @@ export function SolutionCard({
   isFavorite,
   onToggleFavorite,
 }: Props) {
+  const { t, attrName, moduleName, categoryLabel } = useI18n();
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 transition hover:border-slate-700">
       {/* ヘッダ: ランク + Lv分布 + お気に入り + リンク効果 */}
@@ -82,7 +83,7 @@ export function SolutionCard({
             {solution.selected_lv6 > 0 && (
               <span className="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300">
                 <Star size={10} />
-                選択Lv6 ×{solution.selected_lv6}
+                {t("card.selectedLv6", { n: solution.selected_lv6 })}
               </span>
             )}
           </span>
@@ -91,8 +92,8 @@ export function SolutionCard({
           {onToggleFavorite && (
             <button
               onClick={onToggleFavorite}
-              aria-label={isFavorite ? "お気に入りから削除" : "お気に入りに追加"}
-              title={isFavorite ? "お気に入りから削除" : "お気に入りに追加"}
+              aria-label={isFavorite ? t("card.favRemove") : t("card.favAdd")}
+              title={isFavorite ? t("card.favRemove") : t("card.favAdd")}
               aria-pressed={isFavorite}
               className="rounded-md p-1 transition hover:bg-slate-800"
             >
@@ -110,7 +111,7 @@ export function SolutionCard({
             <div className="text-2xl font-bold tabular-nums text-slate-100">
               {solution.link_effect}
             </div>
-            <div className="text-[10px] text-slate-500">リンク効果</div>
+            <div className="text-[10px] text-slate-500">{t("card.linkEffect")}</div>
           </div>
         </div>
       </div>
@@ -121,8 +122,11 @@ export function SolutionCard({
           <div key={b.attr_id} className="flex items-center justify-between gap-2 text-xs">
             <span className="flex min-w-0 items-center gap-1">
               {b.selected && <Star size={9} className="shrink-0 text-emerald-400" />}
-              <span className={`truncate ${levelTextColor(b.level, b.selected)}`} title={b.attr_name}>
-                {b.attr_name}
+              <span
+                className={`truncate ${levelTextColor(b.level, b.selected)}`}
+                title={attrName(b.attr_id, b.attr_name)}
+              >
+                {attrName(b.attr_id, b.attr_name)}
               </span>
             </span>
             <span className="flex items-center gap-2">
@@ -144,9 +148,11 @@ export function SolutionCard({
             className={`rounded-lg border px-2.5 py-1.5 ${qualityColor(m.quality)}`}
           >
             <div className="flex items-center justify-between">
-              <span className="truncate text-xs font-semibold">{m.name}</span>
+              <span className="truncate text-xs font-semibold">
+                {moduleName(m.config_id, m.name)}
+              </span>
               <span className="shrink-0 text-[10px] opacity-70">
-                {CATEGORY_LABELS[m.category] ?? m.category}·Q{m.quality}
+                {categoryLabel(m.category)}·Q{m.quality}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap gap-1">
@@ -161,7 +167,7 @@ export function SolutionCard({
                         : "bg-slate-800/60 text-slate-400"
                     }`}
                   >
-                    {p.attr_name} +{p.value}
+                    {attrName(p.attr_id, p.attr_name)} +{p.value}
                   </span>
                 );
               })}

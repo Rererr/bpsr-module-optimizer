@@ -12,6 +12,11 @@
 
 From the modules you own, it brute-forces every combination of **4 slots** to find the one that maximizes the attributes you are aiming for. Your owned modules are read automatically from the game's network traffic, so there is no manual entry. **It never sends any data to external servers.**
 
+<p align="center">
+  <img src="docs/images/optimizer-result-en.png" alt="Optimization results — brute-forces the best 4 slots from your owned modules" width="860">
+  <br><sub>Brute-forces the best 4-slot build for your target attributes (here: 142 candidates, over 16 million combinations searched)</sub>
+</p>
+
 > A personal-use helper tool. It modifies none of the game's files, memory, or network traffic. Use it at your own risk, and check the terms of service of each platform.
 
 ## Features
@@ -28,6 +33,14 @@ From the modules you own, it brute-forces every combination of **4 slots** to fi
 - **Live auto-fetch & auto-research** — When module information updates, it loads automatically, and if conditions are already set, it re-runs the search automatically.
 - **Automatic state restore** — Saves the fetched modules and your last search conditions, restoring them on the next launch.
 - **JSON dump loading** — For environments where traffic cannot be captured, it can also load from `owned_modules.json`.
+- **Japanese / English UI** — Switch between Japanese and English with the header toggle (no restart needed).
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/optimizer-compare-en.png" alt="Build comparison — compare saved favorites side by side" width="860">
+  <br><sub>Place multiple saved favorite builds side by side and compare their per-attribute levels</sub>
+</p>
 
 ## Installation
 

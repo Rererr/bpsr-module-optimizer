@@ -14,8 +14,8 @@ import type {
   SearchPreset,
   StatusDto,
 } from "./types";
-import { CATEGORY_LABELS } from "./types";
 import { STORAGE_KEYS, loadJSON, saveJSON } from "./storage";
+import { useI18n } from "./i18n";
 import { usePresets } from "./hooks/usePresets";
 import { useFavorites } from "./hooks/useFavorites";
 import { StatusBar } from "./components/StatusBar";
@@ -40,6 +40,7 @@ interface LastSearch {
 type Tab = "results" | "favorites";
 
 export default function App() {
+  const { t, categoryLabel } = useI18n();
   const [attributes, setAttributes] = useState<AttrMeta[]>([]);
 
   // 最後の検索条件を1度だけ読み込み、各状態の初期値に使う。
@@ -134,10 +135,10 @@ export default function App() {
         if (res.solutions.length === 0) {
           setError(
             res.candidate_count < 4
-              ? `候補モジュールが ${res.candidate_count} 件で4枠に満たません（条件を緩めてください）`
+              ? t("error.tooFewCandidates", { c: res.candidate_count })
               : requirements.length > 0
-                ? "指定した下限Lvをすべて満たす組み合わせがありません（下限を下げるか属性を減らしてください）"
-                : "条件に合う組み合わせがありません",
+                ? t("error.noReqMatch")
+                : t("error.noMatch"),
           );
         }
       } catch (e) {
@@ -147,7 +148,7 @@ export default function App() {
         setLoading(false);
       }
     },
-    [],
+    [t],
   );
 
   const runOptimize = useCallback(
@@ -248,7 +249,7 @@ export default function App() {
         <aside className="flex w-[360px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-slate-800 bg-slate-900/30 p-5">
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              プリセット
+              {t("section.presets")}
             </h2>
             <PresetBar
               presets={presets.presets}
@@ -261,7 +262,7 @@ export default function App() {
 
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              属性を選択
+              {t("section.attributes")}
             </h2>
             <AttributePicker
               attributes={attributes}
@@ -273,7 +274,7 @@ export default function App() {
 
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              カテゴリ
+              {t("section.category")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
               {CATEGORIES.map((c) => (
@@ -286,7 +287,7 @@ export default function App() {
                       : "text-slate-300 hover:bg-slate-700/60"
                   }`}
                 >
-                  {CATEGORY_LABELS[c]}
+                  {categoryLabel(c)}
                 </button>
               ))}
             </div>
@@ -294,7 +295,7 @@ export default function App() {
 
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              属性ごとの下限Lv
+              {t("section.minLv")}
             </h2>
             <RequirementList
               targets={targetAttrs}
@@ -305,7 +306,7 @@ export default function App() {
 
           <section>
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              表示件数
+              {t("section.topK")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
               {TOP_K_OPTIONS.map((k) => (
@@ -318,7 +319,7 @@ export default function App() {
                       : "text-slate-300 hover:bg-slate-700/60"
                   }`}
                 >
-                  上位{k}
+                  {t("topK.option", { k })}
                 </button>
               ))}
             </div>
@@ -337,7 +338,7 @@ export default function App() {
             ) : (
               <Sparkles size={16} />
             )}
-            最適化を実行
+            {t("run")}
           </button>
         </aside>
 
@@ -352,7 +353,7 @@ export default function App() {
                   : "text-slate-300 hover:bg-slate-700/60"
               }`}
             >
-              結果
+              {t("tab.results")}
             </button>
             <button
               onClick={() => setTab("favorites")}
@@ -366,7 +367,7 @@ export default function App() {
                 size={12}
                 className={favCount > 0 ? "fill-amber-400 text-amber-400" : ""}
               />
-              お気に入り
+              {t("tab.favorites")}
               {favCount > 0 && (
                 <span className="rounded-full bg-slate-900/60 px-1.5 text-[10px] tabular-nums">
                   {favCount}
@@ -395,10 +396,11 @@ export default function App() {
               {result && result.solutions.length > 0 && (
                 <div className="mb-3 flex items-center justify-between text-xs text-slate-400">
                   <span>
-                    上位 {result.solutions.length} セット
-                    <span className="text-slate-600"> / </span>
-                    候補 {result.candidate_count} 件から{" "}
-                    {result.combinations.toLocaleString()} 通りを探索
+                    {t("results.summary", {
+                      sets: result.solutions.length,
+                      candidates: result.candidate_count,
+                      combos: result.combinations.toLocaleString(),
+                    })}
                   </span>
                 </div>
               )}
@@ -422,18 +424,14 @@ export default function App() {
                     <PackageOpen size={48} className="opacity-40" />
                     {noModules ? (
                       <div>
-                        <p className="text-sm">所持モジュール未取得</p>
-                        <p className="mt-1 text-xs">
-                          管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）
-                        </p>
+                        <p className="text-sm">{t("empty.noModulesTitle")}</p>
+                        <p className="mt-1 text-xs">{t("empty.noModulesDesc")}</p>
                       </div>
                     ) : (
                       <div>
-                        <p className="text-sm">
-                          目標属性を選んで「最適化を実行」を押してください
-                        </p>
+                        <p className="text-sm">{t("empty.readyTitle")}</p>
                         <p className="mt-1 text-xs">
-                          所持 {status?.module_count ?? 0} 件から最良の4枠を探索します
+                          {t("empty.readyDesc", { n: status?.module_count ?? 0 })}
                         </p>
                       </div>
                     )}

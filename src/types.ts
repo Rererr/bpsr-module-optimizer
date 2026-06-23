@@ -58,14 +58,6 @@ export interface StatusDto {
   last_game_packet_ms_ago: number | null;
 }
 
-export const CATEGORY_LABELS: Record<string, string> = {
-  all: "すべて",
-  attack: "攻撃",
-  guardian: "防御",
-  support: "支援",
-  unknown: "不明",
-};
-
 // 属性レベルの閾値境界（属性値 → Lv0〜6）。UI のレベル表示に使う。
 export const ATTR_THRESHOLDS = [1, 4, 8, 12, 16, 20];
 

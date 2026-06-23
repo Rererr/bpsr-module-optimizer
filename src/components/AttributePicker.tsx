@@ -1,4 +1,5 @@
 import type { AttrMeta, AttrState } from "../types";
+import { useI18n } from "../i18n";
 
 export type { AttrState };
 
@@ -10,14 +11,6 @@ interface Props {
 }
 
 const GROUP_ORDER = ["Basic", "Combat", "Focus", "Resist", "Support", "Ultra"];
-const GROUP_LABELS: Record<string, string> = {
-  Basic: "基礎ステータス",
-  Combat: "攻撃",
-  Focus: "集中",
-  Resist: "耐性",
-  Support: "回復/支援",
-  Ultra: "上位(Ultra)",
-};
 
 function chipClass(state: AttrState, special: boolean): string {
   if (state === "target")
@@ -30,6 +23,7 @@ function chipClass(state: AttrState, special: boolean): string {
 }
 
 export function AttributePicker({ attributes, selection, onCycle, onClear }: Props) {
+  const { t, lang, attrName, groupLabel } = useI18n();
   const byGroup = new Map<string, AttrMeta[]>();
   for (const a of attributes) {
     if (!byGroup.has(a.group)) byGroup.set(a.group, []);
@@ -46,33 +40,45 @@ export function AttributePicker({ attributes, selection, onCycle, onClear }: Pro
         <div className="flex items-center gap-3 text-xs">
           <span className="flex items-center gap-1.5 text-emerald-300">
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            目標 {targetCount}
+            {t("picker.targetN", { n: targetCount })}
           </span>
           <span className="flex items-center gap-1.5 text-rose-300">
             <span className="h-2 w-2 rounded-full bg-rose-500" />
-            除外 {excludeCount}
+            {t("picker.excludeN", { n: excludeCount })}
           </span>
         </div>
         <button
           onClick={onClear}
           className="text-xs text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
         >
-          クリア
+          {t("picker.clear")}
         </button>
       </div>
 
       <p className="text-[11px] leading-relaxed text-slate-500">
-        クリックで <span className="text-emerald-300">目標</span> →{" "}
-        <span className="text-rose-300">除外</span> → 解除 と切替。
-        <span className="text-emerald-300">目標</span>はLv6到達を優先、
-        <span className="text-rose-300">除外</span>はその属性を含む組み合わせを除外します。
+        {lang === "ja" ? (
+          <>
+            クリックで <span className="text-emerald-300">目標</span> →{" "}
+            <span className="text-rose-300">除外</span> → 解除 と切替。
+            <span className="text-emerald-300">目標</span>はLv6到達を優先、
+            <span className="text-rose-300">除外</span>はその属性を含む組み合わせを除外します。
+          </>
+        ) : (
+          <>
+            Click to cycle <span className="text-emerald-300">Target</span> →{" "}
+            <span className="text-rose-300">Exclude</span> → off.{" "}
+            <span className="text-emerald-300">Target</span> prioritizes reaching Lv6;{" "}
+            <span className="text-rose-300">Exclude</span> drops any combination
+            containing that attribute.
+          </>
+        )}
       </p>
 
       <div className="flex flex-col gap-3">
         {groups.map((g) => (
           <div key={g}>
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              {GROUP_LABELS[g] ?? g}
+              {groupLabel(g)}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {byGroup.get(g)!.map((a) => {
@@ -86,7 +92,7 @@ export function AttributePicker({ attributes, selection, onCycle, onClear }: Pro
                       a.special,
                     )}`}
                   >
-                    {a.name}
+                    {attrName(a.id, a.name)}
                   </button>
                 );
               })}

@@ -1,4 +1,5 @@
 import type { AttrMeta } from "../types";
+import { useI18n } from "../i18n";
 
 interface Props {
   targets: AttrMeta[];
@@ -10,10 +11,11 @@ interface Props {
 const LEVELS = [0, 1, 2, 3, 4, 5, 6];
 
 export function RequirementList({ targets, levels, onChange }: Props) {
+  const { t, attrName } = useI18n();
   if (targets.length === 0) {
     return (
       <p className="rounded-lg bg-slate-800/40 px-3 py-2.5 text-[11px] leading-relaxed text-slate-500">
-        目標属性（緑）を選ぶと、ここで属性ごとに下限Lvを設定できます。
+        {t("req.empty")}
       </p>
     );
   }
@@ -29,8 +31,8 @@ export function RequirementList({ targets, levels, onChange }: Props) {
           >
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
-              <span className="truncate text-xs text-slate-200" title={a.name}>
-                {a.name}
+              <span className="truncate text-xs text-slate-200" title={attrName(a.id, a.name)}>
+                {attrName(a.id, a.name)}
               </span>
             </span>
             <select
@@ -44,7 +46,7 @@ export function RequirementList({ targets, levels, onChange }: Props) {
             >
               {LEVELS.map((n) => (
                 <option key={n} value={n} className="bg-slate-900 text-slate-200">
-                  {n === 0 ? "下限なし" : `Lv${n}以上`}
+                  {n === 0 ? t("req.noMin") : t("req.minLv", { n })}
                 </option>
               ))}
             </select>
