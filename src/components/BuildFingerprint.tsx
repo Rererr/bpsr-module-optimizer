@@ -1,4 +1,5 @@
 import type { Module } from "../types";
+import { useI18n } from "../i18n";
 
 // モジュール品質 → 塗り色（SolutionCard の品質配色と対応）。
 function qualityFill(q: number): string {
@@ -24,10 +25,13 @@ interface Props {
  * 保存ビルドを一目で識別できるようにする。
  */
 export function BuildFingerprint({ modules, className = "" }: Props) {
+  const { moduleName } = useI18n();
   return (
     <span
       className={`inline-flex h-1.5 overflow-hidden rounded-full ${className}`}
-      title={modules.map((m) => `${m.name} (Q${m.quality})`).join(" / ")}
+      title={modules
+        .map((m) => `${moduleName(m.config_id, m.name)} (Q${m.quality})`)
+        .join(" / ")}
     >
       {modules.map((m) => (
         <span key={m.key} className={`h-full w-3 ${qualityFill(m.quality)}`} />

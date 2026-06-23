@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import type { AttrMeta, AttrState } from "../types";
-import { CATEGORY_LABELS } from "../types";
+import { useI18n } from "../i18n";
 
 interface Props {
   attributes: AttrMeta[];
@@ -20,7 +20,9 @@ export function ConditionSummary({
   onRemoveAttr,
   onResetCategory,
 }: Props) {
-  const nameOf = new Map(attributes.map((a) => [a.id, a.name]));
+  const { t, attrName, categoryLabel } = useI18n();
+  const nameOf = (id: number) =>
+    attrName(id, attributes.find((a) => a.id === id)?.name ?? `#${id}`);
   const targets: number[] = [];
   const excludes: number[] = [];
   for (const [id, s] of Object.entries(selection)) {
@@ -33,7 +35,7 @@ export function ConditionSummary({
 
   return (
     <div className="mb-2 flex flex-wrap items-center gap-1.5">
-      <span className="text-[11px] text-slate-500">条件</span>
+      <span className="text-[11px] text-slate-500">{t("cond.label")}</span>
 
       {targets.map((id) => {
         const lv = requireLevels[id] ?? 0;
@@ -42,12 +44,12 @@ export function ConditionSummary({
             key={`t${id}`}
             className="flex items-center gap-1 rounded-full border border-emerald-500/50 bg-emerald-500/10 py-0.5 pl-2 pr-1 text-[11px] text-emerald-200"
           >
-            {nameOf.get(id) ?? `#${id}`}
+            {nameOf(id)}
             {lv > 0 && <span className="text-emerald-400/80">Lv≥{lv}</span>}
             <button
               onClick={() => onRemoveAttr(id)}
-              aria-label={`目標「${nameOf.get(id) ?? id}」を解除`}
-              title="解除"
+              aria-label={t("cond.removeTarget", { name: nameOf(id) })}
+              title={t("common.remove")}
               className="rounded-full p-0.5 transition hover:bg-emerald-500/20"
             >
               <X size={11} />
@@ -61,11 +63,11 @@ export function ConditionSummary({
           key={`e${id}`}
           className="flex items-center gap-1 rounded-full border border-rose-500/50 bg-rose-500/10 py-0.5 pl-2 pr-1 text-[11px] text-rose-300"
         >
-          <span className="line-through">{nameOf.get(id) ?? `#${id}`}</span>
+          <span className="line-through">{nameOf(id)}</span>
           <button
             onClick={() => onRemoveAttr(id)}
-            aria-label={`除外「${nameOf.get(id) ?? id}」を解除`}
-            title="解除"
+            aria-label={t("cond.removeExclude", { name: nameOf(id) })}
+            title={t("common.remove")}
             className="rounded-full p-0.5 transition hover:bg-rose-500/20"
           >
             <X size={11} />
@@ -75,11 +77,11 @@ export function ConditionSummary({
 
       {hasCategory && (
         <span className="flex items-center gap-1 rounded-full border border-indigo-500/50 bg-indigo-500/10 py-0.5 pl-2 pr-1 text-[11px] text-indigo-200">
-          {CATEGORY_LABELS[category] ?? category}
+          {categoryLabel(category)}
           <button
             onClick={onResetCategory}
-            aria-label="カテゴリ条件を解除"
-            title="解除"
+            aria-label={t("cond.removeCategory")}
+            title={t("common.remove")}
             className="rounded-full p-0.5 transition hover:bg-indigo-500/20"
           >
             <X size={11} />

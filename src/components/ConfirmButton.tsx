@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
+import { useI18n } from "../i18n";
 
 interface Props {
   onConfirm: () => void;
@@ -16,6 +17,7 @@ interface Props {
  * 1.5秒以内の2回目で onConfirm を実行する。誤クリックによる即時削除を防ぐ。
  */
 export function ConfirmButton({ onConfirm, label, idle, className = "" }: Props) {
+  const { t } = useI18n();
   const [armed, setArmed] = useState(false);
   const timer = useRef<number | null>(null);
 
@@ -41,8 +43,8 @@ export function ConfirmButton({ onConfirm, label, idle, className = "" }: Props)
   return (
     <button
       onClick={click}
-      aria-label={armed ? `${label}（もう一度押して確定）` : label}
-      title={armed ? "もう一度押して削除" : label}
+      aria-label={armed ? t("confirm.again", { label }) : label}
+      title={armed ? t("confirm.againTitle") : label}
       className={`shrink-0 rounded-md p-1 transition ${
         armed ? "bg-rose-500/15 text-rose-300" : className
       }`}

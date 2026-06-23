@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
   presets: "presets.v1",
   favorites: "favorites.v1",
   lastSearch: "lastSearch.v1",
+  lang: "lang.v1",
 } as const;
 
 /** JSON を読み込む。未保存・破損時は fallback を返し、破損は警告ログに残す。 */
