@@ -21,7 +21,7 @@ type Vars = Record<string, string | number>;
 const DICT: Record<Lang, Record<string, string>> = {
   ja: {
     "app.title": "BPSR モジュール最適化",
-    "app.subtitle": "Lv6を優先しリンク効果が最大になる4枠を探索",
+    "app.subtitle": "Lv6を優先しリンク効果が最大になる{n}枠を探索",
     "status.running": "キャプチャ稼働中",
     "status.failed": "キャプチャ失敗(要管理者権限)",
     "status.waiting": "キャプチャ待機",
@@ -37,10 +37,12 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.presets": "プリセット",
     "section.attributes": "属性を選択",
     "section.category": "カテゴリ",
+    "section.slotCount": "スロット数",
     "section.minLv": "属性ごとの下限Lv",
     "section.topK": "表示件数",
     "run": "最適化を実行",
     "topK.option": "上位{k}",
+    "slotCount.option": "{n}枠",
     "tab.results": "結果",
     "tab.favorites": "お気に入り",
     "results.summary":
@@ -49,9 +51,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "empty.noModulesDesc":
       "管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）",
     "empty.readyTitle": "目標属性を選んで「最適化を実行」を押してください",
-    "empty.readyDesc": "所持 {n} 件から最良の4枠を探索します",
+    "empty.readyDesc": "所持 {n} 件から最良の{slots}枠を探索します",
     "error.tooFewCandidates":
-      "候補モジュールが {c} 件で4枠に満たません（条件を緩めてください）",
+      "候補モジュールが {c} 件で{slots}枠に満たません（条件を緩めてください）",
     "error.noReqMatch":
       "指定した下限Lvをすべて満たす組み合わせがありません（下限を下げるか属性を減らしてください）",
     "error.noMatch": "条件に合う組み合わせがありません",
@@ -76,7 +78,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.favRemove": "お気に入りから削除",
     "card.favAdd": "お気に入りに追加",
     "fav.emptyTitle": "お気に入りのビルドはまだありません",
-    "fav.emptyDesc": "結果カードの ★ を押すと、ここに4枠構成を保存できます",
+    "fav.emptyDesc": "結果カードの ★ を押すと、ここに構成を保存できます",
     "fav.compareN": "{n}件を比較",
     "fav.clearSel": "選択解除",
     "fav.compareHint": "カードの「比較」で2〜3件を選択",
@@ -109,7 +111,7 @@ const DICT: Record<Lang, Record<string, string>> = {
   },
   en: {
     "app.title": "BPSR Module Optimizer",
-    "app.subtitle": "Finds the 4 slots that prioritize Lv6 and maximize link effect",
+    "app.subtitle": "Finds the {n} slots that prioritize Lv6 and maximize link effect",
     "status.running": "Capturing",
     "status.failed": "Capture failed (admin required)",
     "status.waiting": "Waiting for capture",
@@ -125,10 +127,12 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.presets": "Presets",
     "section.attributes": "Select Attributes",
     "section.category": "Category",
+    "section.slotCount": "Slots",
     "section.minLv": "Min Lv per Attribute",
     "section.topK": "Result Count",
     "run": "Run Optimization",
     "topK.option": "Top {k}",
+    "slotCount.option": "{n} slots",
     "tab.results": "Results",
     "tab.favorites": "Favorites",
     "results.summary":
@@ -137,9 +141,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "empty.noModulesDesc":
       "Launch as administrator and change maps in-game to capture them (captured data is saved automatically and restored on the next launch).",
     "empty.readyTitle": "Pick target attributes and press “Run Optimization”",
-    "empty.readyDesc": "Searches the best 4 slots from your {n} modules",
+    "empty.readyDesc": "Searches the best {slots} slots from your {n} modules",
     "error.tooFewCandidates":
-      "Only {c} candidate modules — not enough for 4 slots (relax the conditions).",
+      "Only {c} candidate modules — not enough for {slots} slots (relax the conditions).",
     "error.noReqMatch":
       "No combination satisfies all the specified minimum levels (lower them or reduce attributes).",
     "error.noMatch": "No combination matches the conditions.",
@@ -164,7 +168,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.favRemove": "Remove from favorites",
     "card.favAdd": "Add to favorites",
     "fav.emptyTitle": "No favorite builds yet",
-    "fav.emptyDesc": "Press the ★ on a result card to save a 4-slot build here.",
+    "fav.emptyDesc": "Press the ★ on a result card to save a build here.",
     "fav.compareN": "Compare {n}",
     "fav.clearSel": "Clear selection",
     "fav.compareHint": "Select 2–3 with the “Compare” checkbox",

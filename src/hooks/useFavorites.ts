@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SavedBuild, Solution } from "../types";
 import { STORAGE_KEYS, loadJSON, saveJSON } from "../storage";
 
-/** 4枠構成の同一性キー。モジュール uuid を昇順連結（順序非依存）。 */
+/** ビルド構成の同一性キー。モジュール uuid を昇順連結（枠数非依存・順序非依存）。 */
 export function buildIdOf(solution: Solution): string {
   return solution.modules
     .map((m) => m.uuid)

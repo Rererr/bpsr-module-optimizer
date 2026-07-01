@@ -1,5 +1,5 @@
 //! bpsr-module-optimizer: 所持モジュールから、Lv6数 → Lv5数 → レベル合計 →
-//! リンク効果 の優先度で最良の4枠の組み合わせを求める Tauri アプリ。
+//! リンク効果 の優先度で最良の枠（4または5）の組み合わせを求める Tauri アプリ。
 
 mod attrs;
 mod capture;
@@ -141,10 +141,14 @@ async fn optimize(
     // 属性ごとの下限レベル要求 [(attr_id, min_level)]。level 0/未指定は制約なし。
     requirements: Vec<(i32, usize)>,
     top_k: usize,
+    // 装備枠数。現状は 4 または 5 のみ対応。
+    slot_count: usize,
 ) -> Result<OptimizeResult, String> {
     // MutexGuard を await をまたいで保持しないよう、先にモジュールを複製する。
     let modules = state.lock().expect("state poisoned").modules.clone();
     let top_k = top_k.clamp(1, 100);
+    // 想定外の値は握り潰さず 4〜5 に丸める。
+    let slot_count = slot_count.clamp(4, 5);
     // 全探索は重いので blocking プールへ退避し UI スレッドを塞がない。
     tauri::async_runtime::spawn_blocking(move || {
         optimizer::optimize(
@@ -154,6 +158,7 @@ async fn optimize(
             &exclude_ids,
             &requirements,
             top_k,
+            slot_count,
         )
     })
     .await
