@@ -140,7 +140,7 @@ export function SolutionCard({
         ))}
       </div>
 
-      {/* 4モジュール */}
+      {/* 構成モジュール一覧 */}
       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
         {solution.modules.map((m) => (
           <div

@@ -21,7 +21,7 @@ interface Props {
 }
 
 /**
- * ビルド指紋ストリップ。4モジュールの品質色を等幅セグメントで並べ、
+ * ビルド指紋ストリップ。各モジュールの品質色を等幅セグメントで並べ、
  * 保存ビルドを一目で識別できるようにする。
  */
 export function BuildFingerprint({ modules, className = "" }: Props) {

@@ -6,6 +6,7 @@ interface Props {
   status: StatusDto | null;
   onReloadDump: () => void;
   busy: boolean;
+  slotCount: number;
 }
 
 function stateColor(s: StatusDto["capture_state"]): string {
@@ -19,7 +20,7 @@ function stateColor(s: StatusDto["capture_state"]): string {
   }
 }
 
-export function StatusBar({ status, onReloadDump, busy }: Props) {
+export function StatusBar({ status, onReloadDump, busy, slotCount }: Props) {
   const { t, lang, setLang } = useI18n();
 
   const stateLabel = (s: StatusDto["capture_state"]): string => {
@@ -52,7 +53,9 @@ export function StatusBar({ status, onReloadDump, busy }: Props) {
           <h1 className="text-sm font-bold tracking-wide text-slate-100">
             {t("app.title")}
           </h1>
-          <p className="text-[11px] text-slate-400">{t("app.subtitle")}</p>
+          <p className="text-[11px] text-slate-400">
+            {t("app.subtitle", { n: slotCount })}
+          </p>
         </div>
       </div>
 

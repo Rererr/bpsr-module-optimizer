@@ -1,13 +1,14 @@
-//! モジュール最適化: 所持モジュールから4枠の組み合わせを全探索し、
+//! モジュール最適化: 所持モジュールから slot_count 枠の組み合わせを全探索し、
 //! 「レベル分布 → リンク効果」の辞書式優先度で最良を求める。
 //!
 //! 評価指標（ゲーム内モジュール画面の「パワーコア効果」「リンク効果」に対応）:
-//! - 各属性は 4枠分の値を合計し、閾値 [1,4,8,12,16,20] でレベル(0〜6)化。
+//! - 各属性は slot_count 枠分の値を合計し、閾値 [1,4,8,12,16,20] でレベル(0〜6)化。
+//!   閾値はスロット数に依存しない（合計値20でLv6）。
 //! - リンク効果 = 全属性値の合計（画面右上の数値）。
 //!
 //! ランキング（辞書式・すべて最大化）:
 //!   1. 選択属性が Lv6 到達した数（選択を優先）
-//!   2. Lv6 属性の総数（理想 4）
+//!   2. Lv6 属性の総数
 //!   3. Lv5 属性の総数
 //!   4. 全属性レベルの合計（余りの属性も高く）
 //!   5. リンク効果（全属性値の合計）= 表示スコア
@@ -16,15 +17,32 @@ use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
-/// 装備枠数（4枠固定）。
-pub const SLOT_COUNT: usize = 4;
-
 /// 属性レベルの閾値（値 >= 閾値 でその段に到達）。
 const ATTR_THRESHOLDS: [i32; 6] = [1, 4, 8, 12, 16, 20];
 
 #[inline]
 fn level_of(v: i32) -> usize {
     ATTR_THRESHOLDS.iter().take_while(|&&t| v >= t).count()
+}
+
+/// `combo`（昇順の候補インデックス列）を辞書式に次の組み合わせへ進める。
+/// これ以上進めない（最後の組み合わせだった）場合は false を返す。
+/// n 個から combo.len() 個を選ぶ全組み合わせを、任意のスロット数で列挙するために使う。
+fn next_combination(combo: &mut [usize], n: usize) -> bool {
+    let k = combo.len();
+    let mut i = k;
+    while i > 0 {
+        i -= 1;
+        // i 番目を進められる（右側の要素分の余地がある）か。
+        if combo[i] != i + n - k {
+            combo[i] += 1;
+            for j in (i + 1)..k {
+                combo[j] = combo[j - 1] + 1;
+            }
+            return true;
+        }
+    }
+    false
 }
 
 // ---- DTO ----
@@ -123,7 +141,8 @@ pub struct OptimizeResult {
 type Key = (usize, usize, usize, usize, i32);
 
 /// 最適化本体。
-/// - `category`: Some なら該当カテゴリのモジュールのみを4枠に使う。
+/// - `slot_count`: 装備枠数（この個数の組み合わせを全探索する）。
+/// - `category`: Some なら該当カテゴリのモジュールのみを枠に使う。
 /// - `exclude_ids`: いずれかを含むモジュールは候補から除外。
 /// - `require_level`: Some(lv) なら、全選択属性が lv 以上に到達する組み合わせのみ採用。
 pub fn optimize(
@@ -133,6 +152,7 @@ pub fn optimize(
     exclude_ids: &[i32],
     requirements: &[(i32, usize)],
     top_k: usize,
+    slot_count: usize,
 ) -> OptimizeResult {
     // カテゴリ絞り込み・除外属性を含むモジュールを除いた候補。
     let candidates: Vec<&Module> = modules
@@ -142,7 +162,7 @@ pub fn optimize(
         .collect();
 
     let n = candidates.len();
-    if n < SLOT_COUNT {
+    if slot_count == 0 || n < slot_count {
         return OptimizeResult {
             solutions: Vec::new(),
             candidate_count: n,
@@ -196,78 +216,75 @@ pub fn optimize(
 
     let mut totals = vec![0i32; n_attr];
     let mut touched: Vec<usize> = Vec::with_capacity(12);
-    let mut heap: BinaryHeap<Reverse<(Key, [usize; SLOT_COUNT])>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<Reverse<(Key, Vec<usize>)>> = BinaryHeap::new();
     let mut combinations: u64 = 0;
 
-    for i in 0..n {
-        for j in (i + 1)..n {
-            for k in (j + 1)..n {
-                for l in (k + 1)..n {
-                    combinations += 1;
+    // n 個から slot_count 個を選ぶ組み合わせを辞書式に全列挙。
+    let mut combo: Vec<usize> = (0..slot_count).collect();
+    loop {
+        combinations += 1;
 
-                    // 集計（触れた idx のみ）。
-                    for combo_idx in [i, j, k, l] {
-                        for &(idx, val) in &vecs[combo_idx] {
-                            if totals[idx] == 0 {
-                                touched.push(idx);
-                            }
-                            totals[idx] += val;
-                        }
-                    }
+        // 集計（触れた idx のみ）。
+        for &combo_idx in &combo {
+            for &(idx, val) in &vecs[combo_idx] {
+                if totals[idx] == 0 {
+                    touched.push(idx);
+                }
+                totals[idx] += val;
+            }
+        }
 
-                    // キー算出。
-                    let mut lv6 = 0usize;
-                    let mut lv5 = 0usize;
-                    let mut sel_lv6 = 0usize;
-                    let mut level_sum = 0usize;
-                    let mut link = 0i32;
-                    for &idx in &touched {
-                        let v = totals[idx];
-                        let lv = level_of(v);
-                        level_sum += lv;
-                        link += v;
-                        if lv == 6 {
-                            lv6 += 1;
-                        } else if lv == 5 {
-                            lv5 += 1;
-                        }
-                        if selected_mask[idx] && lv == 6 {
-                            sel_lv6 += 1;
-                        }
-                    }
+        // キー算出。
+        let mut lv6 = 0usize;
+        let mut lv5 = 0usize;
+        let mut sel_lv6 = 0usize;
+        let mut level_sum = 0usize;
+        let mut link = 0i32;
+        for &idx in &touched {
+            let v = totals[idx];
+            let lv = level_of(v);
+            level_sum += lv;
+            link += v;
+            if lv == 6 {
+                lv6 += 1;
+            } else if lv == 5 {
+                lv5 += 1;
+            }
+            if selected_mask[idx] && lv == 6 {
+                sel_lv6 += 1;
+            }
+        }
 
-                    // 属性ごとの下限Lv要求（totals がまだ有効なうちに判定）。
-                    let req_ok = required_idxs
-                        .iter()
-                        .all(|&(idx, lv)| level_of(totals[idx]) >= lv);
+        // 属性ごとの下限Lv要求（totals がまだ有効なうちに判定）。
+        let req_ok = required_idxs
+            .iter()
+            .all(|&(idx, lv)| level_of(totals[idx]) >= lv);
 
-                    // touched をリセット。
-                    for &idx in &touched {
-                        totals[idx] = 0;
-                    }
-                    touched.clear();
+        // touched をリセット。
+        for &idx in &touched {
+            totals[idx] = 0;
+        }
+        touched.clear();
 
-                    if !req_ok {
-                        continue;
-                    }
-
-                    let key: Key = (sel_lv6, lv6, lv5, level_sum, link);
-                    if heap.len() < top_k {
-                        heap.push(Reverse((key, [i, j, k, l])));
-                    } else if let Some(Reverse((min_key, _))) = heap.peek() {
-                        if key > *min_key {
-                            heap.pop();
-                            heap.push(Reverse((key, [i, j, k, l])));
-                        }
-                    }
+        if req_ok {
+            let key: Key = (sel_lv6, lv6, lv5, level_sum, link);
+            if heap.len() < top_k {
+                heap.push(Reverse((key, combo.clone())));
+            } else if let Some(Reverse((min_key, _))) = heap.peek() {
+                if key > *min_key {
+                    heap.pop();
+                    heap.push(Reverse((key, combo.clone())));
                 }
             }
+        }
+
+        if !next_combination(&mut combo, n) {
+            break;
         }
     }
 
     // キー降順に並べる。
-    let mut ranked: Vec<(Key, [usize; SLOT_COUNT])> =
-        heap.into_iter().map(|Reverse(x)| x).collect();
+    let mut ranked: Vec<(Key, Vec<usize>)> = heap.into_iter().map(|Reverse(x)| x).collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0));
 
     let solutions = ranked
@@ -285,7 +302,7 @@ pub fn optimize(
     }
 }
 
-/// 4モジュールから内訳と各指標を再構成して Solution を作る。
+/// 選択された各モジュールから内訳と各指標を再構成して Solution を作る。
 fn build_solution(mods: Vec<Module>, selected_ids: &[i32]) -> Solution {
     let mut totals: HashMap<i32, (String, i32)> = HashMap::new();
     for m in &mods {
@@ -376,7 +393,7 @@ mod tests {
             module(4, 5500103, &[(1, 8), (2, 8)]),
         ];
         // 全4枠使用: attr1=10+10+8+8=36(Lv6), attr2=8+8=16(Lv5) → lv6=1,lv5=1
-        let res = optimize(&modules, &[], None, &[], &[], 5);
+        let res = optimize(&modules, &[], None, &[], &[], 5, 4);
         let best = &res.solutions[0];
         assert_eq!(best.lv6_count, 1);
         assert_eq!(best.lv5_count, 1);
@@ -393,7 +410,7 @@ mod tests {
             module(4, 5500103, &[(9, 1), (5, 20)]),
         ];
         // 全枠: attr9=22(Lv6), attr5=40(Lv6) → 両方Lv6だが選択(9)もLv6
-        let res = optimize(&modules, &[9], None, &[], &[], 5);
+        let res = optimize(&modules, &[9], None, &[], &[], 5, 4);
         let best = &res.solutions[0];
         assert!(best.selected_lv6 >= 1);
     }
@@ -408,10 +425,45 @@ mod tests {
             module(4, 5500103, &[(9, 3)]),
         ];
         // 合計 12 → Lv4 のみ。attr9 を Lv6必須なら解なし。
-        let res = optimize(&modules, &[9], None, &[], &[(9, 6)], 5);
+        let res = optimize(&modules, &[9], None, &[], &[(9, 6)], 5, 4);
         assert!(res.solutions.is_empty());
         // Lv4必須なら成立。
-        let res2 = optimize(&modules, &[9], None, &[], &[(9, 4)], 5);
+        let res2 = optimize(&modules, &[9], None, &[], &[(9, 4)], 5, 4);
         assert_eq!(res2.solutions.len(), 1);
+    }
+
+    #[test]
+    fn five_slots_selects_five_modules() {
+        // 5枠指定時は5モジュールを選び、合計もその5枠分になること。
+        let modules = vec![
+            module(1, 5500103, &[(1, 5)]),
+            module(2, 5500103, &[(1, 5)]),
+            module(3, 5500103, &[(1, 5)]),
+            module(4, 5500103, &[(1, 5)]),
+            module(5, 5500103, &[(1, 5)]),
+            module(6, 5500103, &[(1, 1)]),
+        ];
+        // 上位5モジュール(各5) → attr1=25(Lv6), link=25。6番目(1)は不採用。
+        let res = optimize(&modules, &[1], None, &[], &[], 5, 5);
+        let best = &res.solutions[0];
+        assert_eq!(best.modules.len(), 5);
+        assert_eq!(best.link_effect, 25);
+        assert_eq!(best.lv6_count, 1);
+        // C(6,5)=6 通り。
+        assert_eq!(res.combinations, 6);
+    }
+
+    #[test]
+    fn too_few_candidates_for_slots() {
+        // 候補が slot_count 未満なら解なし。
+        let modules = vec![
+            module(1, 5500103, &[(1, 5)]),
+            module(2, 5500103, &[(1, 5)]),
+            module(3, 5500103, &[(1, 5)]),
+            module(4, 5500103, &[(1, 5)]),
+        ];
+        let res = optimize(&modules, &[1], None, &[], &[], 5, 5);
+        assert!(res.solutions.is_empty());
+        assert_eq!(res.candidate_count, 4);
     }
 }

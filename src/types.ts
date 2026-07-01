@@ -69,12 +69,14 @@ export interface SearchPreset {
   requireLevels: Record<number, number>;
   category: string;
   topK: number;
+  // 装備枠数（4 または 5）。旧プリセットには存在しないため適用側で 4 にフォールバックする。
+  slotCount: number;
   createdAt: number;
 }
 
-// お気に入りに保存した4枠構成（解候補のスナップショット）。
+// お気に入りに保存したビルド構成（解候補のスナップショット）。
 export interface SavedBuild {
-  id: string; // buildIdOf(solution): 4モジュール uuid を昇順連結
+  id: string; // buildIdOf(solution): 各モジュール uuid を昇順連結
   name: string; // 既定は自動命名、ユーザー編集可
   solution: Solution; // 保存時点の値（モジュール集合が変わっても保持）
   targetIds: number[]; // 保存時の目標属性。カード内の該当パーツ強調を再現

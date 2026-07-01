@@ -5,7 +5,7 @@ import { STORAGE_KEYS, loadJSON, saveJSON } from "../storage";
 // プリセット保存に必要な検索条件（id/name/createdAt を除いた本体）。
 export type PresetConfig = Pick<
   SearchPreset,
-  "selection" | "requireLevels" | "category" | "topK"
+  "selection" | "requireLevels" | "category" | "topK" | "slotCount"
 >;
 
 function newId(): string {

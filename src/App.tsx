@@ -28,6 +28,9 @@ import { FavoritesPanel } from "./components/FavoritesPanel";
 
 const CATEGORIES = ["all", "attack", "guardian", "support"];
 const TOP_K_OPTIONS = [3, 5, 10];
+const SLOT_COUNT_OPTIONS = [4, 5];
+// 旧データ（slotCount 欠落）や不正値のフォールバック既定値。
+const DEFAULT_SLOT_COUNT = 4;
 
 // 再起動時に復元する検索条件。
 interface LastSearch {
@@ -35,6 +38,7 @@ interface LastSearch {
   requireLevels: Record<number, number>;
   category: string;
   topK: number;
+  slotCount: number;
 }
 
 type Tab = "results" | "favorites";
@@ -52,6 +56,9 @@ export default function App() {
   );
   const [category, setCategory] = useState<string>(() => restored.category ?? "all");
   const [topK, setTopK] = useState<number>(() => restored.topK ?? 5);
+  const [slotCount, setSlotCount] = useState<number>(
+    () => restored.slotCount ?? DEFAULT_SLOT_COUNT,
+  );
   // 属性ごとの下限レベル（attr_id -> level、0/未設定=制約なし）。
   const [requireLevels, setRequireLevels] = useState<Record<number, number>>(
     () => restored.requireLevels ?? {},
@@ -94,8 +101,9 @@ export default function App() {
       requireLevels,
       category,
       topK,
+      slotCount,
     });
-  }, [selection, requireLevels, category, topK]);
+  }, [selection, requireLevels, category, topK, slotCount]);
 
   const refreshStatus = useCallback(() => {
     captureStatus().then(setStatus).catch(() => {});
@@ -111,6 +119,7 @@ export default function App() {
       reqLevels: Record<number, number>,
       cat: string,
       k: number,
+      slots: number,
     ) => {
       setError(null);
       setLoading(true);
@@ -130,12 +139,13 @@ export default function App() {
           excludeIds: eIds,
           requirements,
           topK: k,
+          slotCount: slots,
         });
         setResult(res);
         if (res.solutions.length === 0) {
           setError(
-            res.candidate_count < 4
-              ? t("error.tooFewCandidates", { c: res.candidate_count })
+            res.candidate_count < slots
+              ? t("error.tooFewCandidates", { c: res.candidate_count, slots })
               : requirements.length > 0
                 ? t("error.noReqMatch")
                 : t("error.noMatch"),
@@ -152,8 +162,8 @@ export default function App() {
   );
 
   const runOptimize = useCallback(
-    () => runWith(selection, requireLevels, category, topK),
-    [runWith, selection, requireLevels, category, topK],
+    () => runWith(selection, requireLevels, category, topK, slotCount),
+    [runWith, selection, requireLevels, category, topK, slotCount],
   );
 
   useEffect(() => {
@@ -201,25 +211,28 @@ export default function App() {
     const next = { ...selection };
     delete next[id];
     setSelection(next);
-    runWith(next, requireLevels, category, topK);
+    runWith(next, requireLevels, category, topK, slotCount);
   };
 
   const resetCategory = () => {
     setCategory("all");
-    runWith(selection, requireLevels, "all", topK);
+    runWith(selection, requireLevels, "all", topK, slotCount);
   };
 
   const applyPreset = (p: SearchPreset) => {
+    // 旧プリセットには slotCount が無いため既定値へフォールバック。
+    const slots = p.slotCount ?? DEFAULT_SLOT_COUNT;
     setSelection(p.selection);
     setRequireLevels(p.requireLevels);
     setCategory(p.category);
     setTopK(p.topK);
+    setSlotCount(slots);
     setTab("results");
-    runWith(p.selection, p.requireLevels, p.category, p.topK);
+    runWith(p.selection, p.requireLevels, p.category, p.topK, slots);
   };
 
   const savePreset = (name: string) =>
-    presets.save(name, { selection, requireLevels, category, topK });
+    presets.save(name, { selection, requireLevels, category, topK, slotCount });
 
   const onReloadDump = async () => {
     setBusy(true);
@@ -242,7 +255,12 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
-      <StatusBar status={status} onReloadDump={onReloadDump} busy={busy} />
+      <StatusBar
+        status={status}
+        onReloadDump={onReloadDump}
+        busy={busy}
+        slotCount={slotCount}
+      />
 
       <div className="flex min-h-0 flex-1">
         {/* 左サイドバー: 条件設定 */}
@@ -288,6 +306,27 @@ export default function App() {
                   }`}
                 >
                   {categoryLabel(c)}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+              {t("section.slotCount")}
+            </h2>
+            <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+              {SLOT_COUNT_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSlotCount(s)}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                    slotCount === s
+                      ? "bg-indigo-500 text-white shadow"
+                      : "text-slate-300 hover:bg-slate-700/60"
+                  }`}
+                >
+                  {t("slotCount.option", { n: s })}
                 </button>
               ))}
             </div>
@@ -431,7 +470,10 @@ export default function App() {
                       <div>
                         <p className="text-sm">{t("empty.readyTitle")}</p>
                         <p className="mt-1 text-xs">
-                          {t("empty.readyDesc", { n: status?.module_count ?? 0 })}
+                          {t("empty.readyDesc", {
+                            n: status?.module_count ?? 0,
+                            slots: slotCount,
+                          })}
                         </p>
                       </div>
                     )}

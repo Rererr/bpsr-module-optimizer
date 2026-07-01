@@ -22,6 +22,8 @@ export interface OptimizeArgs {
   /// 属性ごとの下限レベル [attr_id, min_level]。
   requirements: [number, number][];
   topK: number;
+  /// 装備枠数（4 または 5）。
+  slotCount: number;
 }
 
 export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
@@ -31,6 +33,7 @@ export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
     excludeIds: args.excludeIds,
     requirements: args.requirements,
     topK: args.topK,
+    slotCount: args.slotCount,
   });
 }
 
