@@ -10,7 +10,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/exU3gPBx3)
 
-From the modules you own, it brute-forces every combination of **4 slots** to find the one that maximizes the attributes you are aiming for. Your owned modules are read automatically from the game's network traffic, so there is no manual entry. **It never sends any data to external servers.**
+From the modules you own, it brute-forces every combination of **4 or 5 slots** to find the one that maximizes the attributes you are aiming for. Your owned modules are read automatically from the game's network traffic, so there is no manual entry. **It never sends any data to external servers.**
 
 <p align="center">
   <img src="docs/images/optimizer-result-en.png" alt="Optimization results — brute-forces the best 4 slots from your owned modules" width="860">
@@ -21,13 +21,13 @@ From the modules you own, it brute-forces every combination of **4 slots** to fi
 
 ## Features
 
-- **Full 4-slot search** — Compares every 4-slot combination from your owned modules and presents the best set.
+- **Full 4/5-slot search** — Switch the slot count between 4 and 5. Compares every combination for the chosen slot count from your owned modules and presents the best set.
 - **Target / excluded attributes** — Click to pick the attribute you want to grow (click again to mark it as excluded).
 - **Per-attribute minimum level** — Narrow results with conditions like "this attribute must be at least Lv5."
 - **Category filter** — Filter by module type: Attack / Guard / Support.
 - **Top 3 / 5 / 10 view** — Lists each set's Lv6 count, Lv5 count, full attribute-level breakdown, and link effect (the sum of all attribute values).
 - **Presets** — Name and save frequently used search conditions and recall them with one click.
-- **Favorite builds** — Save 4-slot setups you like with a ★. They can be named and managed, and multiple builds can be compared side by side.
+- **Favorite builds** — Save setups you like with a ★. They can be named and managed, and multiple builds can be compared side by side.
 - **Build comparison** — Pick 2–3 from your favorites to display the attribute differences in parallel.
 - **Condition summary** — Shows the current search conditions as tags. Remove a condition on the spot via the × on a tag and re-search.
 - **Live auto-fetch & auto-research** — When module information updates, it loads automatically, and if conditions are already set, it re-runs the search automatically.
@@ -99,7 +99,7 @@ How to bypass:
 
 ## Optimization criteria
 
-Candidate 4-slot combinations are compared in the following priority order:
+Candidate combinations are compared in the following priority order:
 
 1. The number of selected target attributes that reached Lv6
 2. The total number of Lv6 attributes
