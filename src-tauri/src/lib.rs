@@ -72,7 +72,8 @@ impl From<DumpModule> for Module {
 }
 
 fn load_dump(path: &PathBuf) -> Result<Vec<Module>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("読込失敗 {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("読込失敗 {}: {e}", path.display()))?;
     let dump: Vec<DumpModule> =
         serde_json::from_str(&text).map_err(|e| format!("JSON 解析失敗: {e}"))?;
     Ok(dump.into_iter().map(Module::from).collect())
@@ -81,8 +82,7 @@ fn load_dump(path: &PathBuf) -> Result<Vec<Module>, String> {
 /// モジュールを JSON でパスへ書き出す（取得時の自動保存で使用）。
 /// 出力は `DumpModule` が読み戻せる形（`category` 余剰フィールドは読込側で無視される）。
 pub(crate) fn write_dump(path: &PathBuf, modules: &[Module]) -> Result<(), String> {
-    let json =
-        serde_json::to_string_pretty(modules).map_err(|e| format!("JSON 変換失敗: {e}"))?;
+    let json = serde_json::to_string_pretty(modules).map_err(|e| format!("JSON 変換失敗: {e}"))?;
     std::fs::write(path, json).map_err(|e| format!("保存失敗 {}: {e}", path.display()))
 }
 
@@ -133,11 +133,15 @@ fn capture_status(state: tauri::State<SharedState>) -> StatusDto {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn optimize(
     state: tauri::State<'_, SharedState>,
     selected_ids: Vec<i32>,
     category: Option<String>,
+    // ハード除外: いずれかを含むモジュールを候補から丸ごと除外。
     exclude_ids: Vec<i32>,
+    // ソフト除外: モジュールは候補に残すが、該当属性はランキング集計から除外する。
+    soft_exclude_ids: Vec<i32>,
     // 属性ごとの下限レベル要求 [(attr_id, min_level)]。level 0/未指定は制約なし。
     requirements: Vec<(i32, usize)>,
     top_k: usize,
@@ -156,18 +160,22 @@ async fn optimize(
             &selected_ids,
             category.as_deref(),
             &exclude_ids,
+            &soft_exclude_ids,
             &requirements,
             top_k,
             slot_count,
         )
     })
     .await
-    .map_err(|e| format!("最適化タスク失敗: {e}"))
+    .map_err(|e| format!("最適化タスク失敗: {e}"))?
 }
 
 /// 指定パス（省略時は既定）のダンプを読み込み、現在のモジュールを差し替える。
 #[tauri::command]
-fn reload_from_dump(state: tauri::State<SharedState>, path: Option<String>) -> Result<usize, String> {
+fn reload_from_dump(
+    state: tauri::State<SharedState>,
+    path: Option<String>,
+) -> Result<usize, String> {
     let p = path.map(PathBuf::from).unwrap_or_else(default_dump_path);
     let modules = load_dump(&p)?;
     let count = modules.len();

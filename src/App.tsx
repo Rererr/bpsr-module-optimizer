@@ -39,6 +39,7 @@ interface LastSearch {
   category: string;
   topK: number;
   slotCount: number;
+  hardExclude: boolean;
 }
 
 type Tab = "results" | "favorites";
@@ -63,6 +64,11 @@ export default function App() {
   const [requireLevels, setRequireLevels] = useState<Record<number, number>>(
     () => restored.requireLevels ?? {},
   );
+  // 除外モード: true=ハード除外（該当モジュールを丸ごと除外）、false=ソフト除外（新規既定。
+  // 属性のみランキング集計から除外し、モジュール自体は候補に残す）。
+  // 旧データ（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
+  // true にフォールバックして従来の挙動を保つ（新規保存時は必ず明示するため ?? は効かない）。
+  const [hardExclude, setHardExclude] = useState<boolean>(() => restored.hardExclude ?? true);
 
   const [tab, setTab] = useState<Tab>("results");
   const [status, setStatus] = useState<StatusDto | null>(null);
@@ -102,8 +108,9 @@ export default function App() {
       category,
       topK,
       slotCount,
+      hardExclude,
     });
-  }, [selection, requireLevels, category, topK, slotCount]);
+  }, [selection, requireLevels, category, topK, slotCount, hardExclude]);
 
   const refreshStatus = useCallback(() => {
     captureStatus().then(setStatus).catch(() => {});
@@ -120,6 +127,7 @@ export default function App() {
       cat: string,
       k: number,
       slots: number,
+      hardExcl: boolean,
     ) => {
       setError(null);
       setLoading(true);
@@ -130,13 +138,17 @@ export default function App() {
         const eIds = Object.entries(sel)
           .filter(([, s]) => s === "exclude")
           .map(([id]) => Number(id));
+        // hardExcl トグルにより、除外指定属性をハード/ソフトいずれか一方へ振り分ける。
+        const hardExcludeIds = hardExcl ? eIds : [];
+        const softExcludeIds = hardExcl ? [] : eIds;
         const requirements = tIds
           .map((id) => [id, reqLevels[id] ?? 0] as [number, number])
           .filter(([, lv]) => lv > 0);
         const res = await optimize({
           selectedIds: tIds,
           category: cat === "all" ? null : cat,
-          excludeIds: eIds,
+          excludeIds: hardExcludeIds,
+          softExcludeIds,
           requirements,
           topK: k,
           slotCount: slots,
@@ -162,8 +174,8 @@ export default function App() {
   );
 
   const runOptimize = useCallback(
-    () => runWith(selection, requireLevels, category, topK, slotCount),
-    [runWith, selection, requireLevels, category, topK, slotCount],
+    () => runWith(selection, requireLevels, category, topK, slotCount, hardExclude),
+    [runWith, selection, requireLevels, category, topK, slotCount, hardExclude],
   );
 
   useEffect(() => {
@@ -211,28 +223,32 @@ export default function App() {
     const next = { ...selection };
     delete next[id];
     setSelection(next);
-    runWith(next, requireLevels, category, topK, slotCount);
+    runWith(next, requireLevels, category, topK, slotCount, hardExclude);
   };
 
   const resetCategory = () => {
     setCategory("all");
-    runWith(selection, requireLevels, "all", topK, slotCount);
+    runWith(selection, requireLevels, "all", topK, slotCount, hardExclude);
   };
 
   const applyPreset = (p: SearchPreset) => {
     // 旧プリセットには slotCount が無いため既定値へフォールバック。
     const slots = p.slotCount ?? DEFAULT_SLOT_COUNT;
+    // 旧プリセット（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
+    // true にフォールバックして従来の挙動を保つ（新規保存時は常に明示される）。
+    const hardExcl = p.hardExclude ?? true;
     setSelection(p.selection);
     setRequireLevels(p.requireLevels);
     setCategory(p.category);
     setTopK(p.topK);
     setSlotCount(slots);
+    setHardExclude(hardExcl);
     setTab("results");
-    runWith(p.selection, p.requireLevels, p.category, p.topK, slots);
+    runWith(p.selection, p.requireLevels, p.category, p.topK, slots, hardExcl);
   };
 
   const savePreset = (name: string) =>
-    presets.save(name, { selection, requireLevels, category, topK, slotCount });
+    presets.save(name, { selection, requireLevels, category, topK, slotCount, hardExclude });
 
   const onReloadDump = async () => {
     setBusy(true);
@@ -287,6 +303,8 @@ export default function App() {
               selection={selection}
               onCycle={cycle}
               onClear={clearSelection}
+              hardExclude={hardExclude}
+              onHardExcludeChange={setHardExclude}
             />
           </section>
 

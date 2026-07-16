@@ -32,11 +32,14 @@ export interface AttrBreakdown {
   value: number;
   level: number; // 0〜6
   selected: boolean;
+  // ソフト除外指定された属性か。true の場合、lv6_count 等の集計には含まれない。
+  soft_excluded: boolean;
 }
 
 export interface Solution {
   modules: Module[];
-  link_effect: number; // リンク効果（全属性値の合計）= 表示スコア
+  link_effect: number; // リンク効果（全属性値の合計・表示用の真値）。ソフト除外属性の値も含む
+  eval_link: number; // 評価スコア（ソフト除外を除いた counted 属性値の合計）。ランキングの実体
   lv6_count: number;
   lv5_count: number;
   selected_lv6: number;
@@ -71,6 +74,10 @@ export interface SearchPreset {
   topK: number;
   // 装備枠数（4 または 5）。旧プリセットには存在しないため適用側で 4 にフォールバックする。
   slotCount: number;
+  // true ならハード除外（該当モジュールを候補から丸ごと除外）、false ならソフト除外
+  // （属性のみランキング集計から除外）。旧プリセットには存在しないため false（ソフト）に
+  // フォールバックする。
+  hardExclude: boolean;
   createdAt: number;
 }
 

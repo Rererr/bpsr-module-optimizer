@@ -109,9 +109,23 @@ export function SolutionCard({
           )}
           <div className="text-right leading-none">
             <div className="text-2xl font-bold tabular-nums text-slate-100">
-              {solution.link_effect}
+              {solution.eval_link}
             </div>
-            <div className="text-[10px] text-slate-500">{t("card.linkEffect")}</div>
+            <div className="text-[10px] text-slate-500">
+              {/* ソフト除外未使用（eval_link と link_effect が同値）ならゲーム内表記に合わせて
+                  「リンク効果」と表示する。差がある時だけ「評価スコア」であることを明示する。 */}
+              {solution.eval_link === solution.link_effect
+                ? t("card.linkEffect")
+                : t("card.evalLink")}
+            </div>
+            {solution.link_effect !== solution.eval_link && (
+              <div className="mt-1 text-[10px] text-slate-500">
+                {t("card.linkEffect")}{" "}
+                <span className="font-semibold tabular-nums text-slate-400">
+                  {solution.link_effect}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -119,15 +133,27 @@ export function SolutionCard({
       {/* 全属性の内訳（レベル降順） */}
       <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg bg-slate-950/40 p-2.5">
         {solution.breakdown.map((b) => (
-          <div key={b.attr_id} className="flex items-center justify-between gap-2 text-xs">
+          <div
+            key={b.attr_id}
+            className={`flex items-center justify-between gap-2 text-xs ${
+              b.soft_excluded ? "opacity-60" : ""
+            }`}
+          >
             <span className="flex min-w-0 items-center gap-1">
               {b.selected && <Star size={9} className="shrink-0 text-emerald-400" />}
               <span
-                className={`truncate ${levelTextColor(b.level, b.selected)}`}
+                className={`truncate ${
+                  b.soft_excluded ? "text-slate-500 line-through" : levelTextColor(b.level, b.selected)
+                }`}
                 title={attrName(b.attr_id, b.attr_name)}
               >
                 {attrName(b.attr_id, b.attr_name)}
               </span>
+              {b.soft_excluded && (
+                <span className="shrink-0 rounded bg-rose-500/10 px-1 text-[9px] font-medium text-rose-400">
+                  {t("card.softExcluded")}
+                </span>
+              )}
             </span>
             <span className="flex items-center gap-2">
               <span className="text-[10px] text-slate-500">Lv{b.level}</span>
