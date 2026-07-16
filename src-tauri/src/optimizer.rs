@@ -12,9 +12,15 @@
 //!   3. Lv5 属性の総数
 //!   4. 全属性レベルの合計（余りの属性も高く）
 //!   5. リンク効果（全属性値の合計）= 表示スコア
+//!
+//! 探索方式: C(n, slot_count) の全列挙だが、辞書式に枠を深さ優先で選び、ランキングキーを
+//! [`Accum`] で差分更新する（共有プレフィックスの再集計を避ける）。最初の枠を rayon で
+//! 並列化し、各タスクが保持したローカル top-k の和集合から全体 top-k を再構成する。
+//! 同点キーは combo 昇順で決定的に順序付けるため、スレッド数に依らず結果は再現可能。
 
+use rayon::prelude::*;
 use serde::Serialize;
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 
 /// 属性レベルの閾値（値 >= 閾値 でその段に到達）。
@@ -25,24 +31,237 @@ fn level_of(v: i32) -> usize {
     ATTR_THRESHOLDS.iter().take_while(|&&t| v >= t).count()
 }
 
-/// `combo`（昇順の候補インデックス列）を辞書式に次の組み合わせへ進める。
-/// これ以上進めない（最後の組み合わせだった）場合は false を返す。
-/// n 個から combo.len() 個を選ぶ全組み合わせを、任意のスロット数で列挙するために使う。
-fn next_combination(combo: &mut [usize], n: usize) -> bool {
-    let k = combo.len();
-    let mut i = k;
-    while i > 0 {
-        i -= 1;
-        // i 番目を進められる（右側の要素分の余地がある）か。
-        if combo[i] != i + n - k {
-            combo[i] += 1;
-            for j in (i + 1)..k {
-                combo[j] = combo[j - 1] + 1;
-            }
-            return true;
+/// n 個から k 個を選ぶ組み合わせ数 C(n, k)。中間計算を u128 で行い桁溢れを避ける。
+fn n_choose_k(n: usize, k: usize) -> u64 {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut res: u128 = 1;
+    for i in 0..k as u128 {
+        // 各段で res == C(n, i+1) となり常に整数（i+1 個の連続整数の積は (i+1)! で割り切れる）。
+        res = res * (n as u128 - i) / (i + 1);
+    }
+    res as u64
+}
+
+/// 探索候補1件の寄与。属性は密インデックス化済み。
+struct Cand {
+    /// (属性の密インデックス, 値)。
+    parts: Vec<(u32, i32)>,
+}
+
+/// DFS で差分更新するランキング集計。add/remove は「触れた属性数」に比例した O(1) 相当で
+/// キー要素（選択Lv6数・Lv6数・Lv5数・レベル合計・リンク効果）を保つ。
+/// 属性値は正なので add でレベルは単調増加し、level_sum の usize 減算は起きない。
+struct Accum {
+    totals: Vec<i32>,
+    level_sum: usize,
+    lv6: usize,
+    lv5: usize,
+    sel_lv6: usize,
+    link: i32,
+}
+
+impl Accum {
+    fn new(n_attr: usize) -> Self {
+        Self {
+            totals: vec![0; n_attr],
+            level_sum: 0,
+            lv6: 0,
+            lv5: 0,
+            sel_lv6: 0,
+            link: 0,
         }
     }
-    false
+
+    #[inline]
+    fn add(&mut self, cand: &Cand, selected_mask: &[bool]) {
+        for &(idx, val) in &cand.parts {
+            let idx = idx as usize;
+            let old = self.totals[idx];
+            let new = old + val;
+            let old_lv = level_of(old);
+            let new_lv = level_of(new);
+            if new_lv != old_lv {
+                self.level_sum += new_lv - old_lv;
+                match old_lv {
+                    6 => self.lv6 -= 1,
+                    5 => self.lv5 -= 1,
+                    _ => {}
+                }
+                match new_lv {
+                    6 => self.lv6 += 1,
+                    5 => self.lv5 += 1,
+                    _ => {}
+                }
+                if selected_mask[idx] {
+                    if old_lv == 6 {
+                        self.sel_lv6 -= 1;
+                    }
+                    if new_lv == 6 {
+                        self.sel_lv6 += 1;
+                    }
+                }
+            }
+            self.totals[idx] = new;
+            self.link += val;
+        }
+    }
+
+    #[inline]
+    fn remove(&mut self, cand: &Cand, selected_mask: &[bool]) {
+        for &(idx, val) in &cand.parts {
+            let idx = idx as usize;
+            let cur = self.totals[idx];
+            let new = cur - val;
+            let cur_lv = level_of(cur);
+            let new_lv = level_of(new);
+            if cur_lv != new_lv {
+                self.level_sum -= cur_lv - new_lv;
+                match cur_lv {
+                    6 => self.lv6 -= 1,
+                    5 => self.lv5 -= 1,
+                    _ => {}
+                }
+                match new_lv {
+                    6 => self.lv6 += 1,
+                    5 => self.lv5 += 1,
+                    _ => {}
+                }
+                if selected_mask[idx] {
+                    if cur_lv == 6 {
+                        self.sel_lv6 -= 1;
+                    }
+                    if new_lv == 6 {
+                        self.sel_lv6 += 1;
+                    }
+                }
+            }
+            self.totals[idx] = new;
+            self.link -= val;
+        }
+    }
+
+    #[inline]
+    fn key(&self) -> Key {
+        (self.sel_lv6, self.lv6, self.lv5, self.level_sum, self.link)
+    }
+}
+
+/// top-k 保持用の要素。全順序 = キー昇順 → combo 降順（＝ goodness: キー降順・combo 昇順）。
+/// これにより同点キーは辞書式に小さい combo を優先し、スレッド数に依らず結果が決定的になる。
+struct Ranked {
+    key: Key,
+    combo: Vec<u32>,
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.combo == other.combo
+    }
+}
+impl Eq for Ranked {}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key
+            .cmp(&other.key)
+            .then_with(|| other.combo.cmp(&self.combo))
+    }
+}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// 上位 k 件を保持する最小ヒープ（root = 保持中で最も劣る要素）。
+struct TopK {
+    heap: BinaryHeap<Reverse<Ranked>>,
+    cap: usize,
+}
+
+impl TopK {
+    fn new(cap: usize) -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            cap,
+        }
+    }
+
+    /// 現在の combo（path）とキーを候補として投入する。combo の確保は採用時のみ。
+    #[inline]
+    fn offer(&mut self, key: Key, path: &[u32]) {
+        if self.heap.len() < self.cap {
+            self.heap.push(Reverse(Ranked {
+                key,
+                combo: path.to_vec(),
+            }));
+            return;
+        }
+        let worst = &self.heap.peek().expect("cap>=1 なら非空").0;
+        let better = match key.cmp(&worst.key) {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => path < worst.combo.as_slice(),
+        };
+        if better {
+            self.heap.pop();
+            self.heap.push(Reverse(Ranked {
+                key,
+                combo: path.to_vec(),
+            }));
+        }
+    }
+
+    fn into_vec(self) -> Vec<Ranked> {
+        self.heap.into_iter().map(|Reverse(r)| r).collect()
+    }
+}
+
+/// 残り (slot_count - depth) 枠を index `start` 以降から選ぶ再帰列挙。
+/// acc は呼び出し前後で不変（各候補を add→再帰→remove）。leaf で下限Lv要求を判定し top-k へ。
+#[allow(clippy::too_many_arguments)]
+fn dfs(
+    depth: usize,
+    start: usize,
+    slot_count: usize,
+    n: usize,
+    cands: &[Cand],
+    selected_mask: &[bool],
+    required_idxs: &[(usize, usize)],
+    acc: &mut Accum,
+    path: &mut [u32],
+    top: &mut TopK,
+) {
+    if depth == slot_count {
+        if required_idxs
+            .iter()
+            .all(|&(idx, lv)| level_of(acc.totals[idx]) >= lv)
+        {
+            top.offer(acc.key(), path);
+        }
+        return;
+    }
+    // この深さで選べる最大インデックス（右側に残り枠分の余地を残す）。
+    let last = n - (slot_count - depth);
+    for i in start..=last {
+        acc.add(&cands[i], selected_mask);
+        path[depth] = i as u32;
+        dfs(
+            depth + 1,
+            i + 1,
+            slot_count,
+            n,
+            cands,
+            selected_mask,
+            required_idxs,
+            acc,
+            path,
+            top,
+        );
+        acc.remove(&cands[i], selected_mask);
+    }
 }
 
 // ---- DTO ----
@@ -202,95 +421,64 @@ pub fn optimize(
         }
     }
 
-    // 各候補を (idx, value) ペア列に変換。
-    let vecs: Vec<Vec<(usize, i32)>> = candidates
+    // 各候補を密インデックスの寄与列へ変換。
+    let cands: Vec<Cand> = candidates
         .iter()
-        .map(|m| {
-            let mut v: Vec<(usize, i32)> = Vec::with_capacity(m.parts.len());
-            for p in &m.parts {
-                v.push((id_to_idx[&p.attr_id], p.value));
-            }
-            v
+        .map(|m| Cand {
+            parts: m
+                .parts
+                .iter()
+                .map(|p| (id_to_idx[&p.attr_id] as u32, p.value))
+                .collect(),
         })
         .collect();
 
-    let mut totals = vec![0i32; n_attr];
-    let mut touched: Vec<usize> = Vec::with_capacity(12);
-    let mut heap: BinaryHeap<Reverse<(Key, Vec<usize>)>> = BinaryHeap::new();
-    let mut combinations: u64 = 0;
+    // 組み合わせ総数は直接算出（下限Lv要求で除外される分も含む＝旧実装と同義）。
+    let combinations = n_choose_k(n, slot_count);
 
-    // n 個から slot_count 個を選ぶ組み合わせを辞書式に全列挙。
-    let mut combo: Vec<usize> = (0..slot_count).collect();
-    loop {
-        combinations += 1;
+    // 最初の枠を並列化。各タスクは部分木を DFS し、ローカル top-k を返す。
+    // 部分木ごとに保持した top-k の和集合は全体 top-k を必ず包含するため、
+    // それらを goodness 降順で並べ直して上位 top_k を採れば逐次実装と同じ結果になる。
+    let last0 = n - slot_count; // 最初の枠が取り得る最大インデックス。
+    let mut ranked: Vec<Ranked> = (0..last0 + 1)
+        .into_par_iter()
+        .map(|i0| {
+            let mut acc = Accum::new(n_attr);
+            let mut path = vec![0u32; slot_count];
+            let mut top = TopK::new(top_k);
+            acc.add(&cands[i0], &selected_mask);
+            path[0] = i0 as u32;
+            dfs(
+                1,
+                i0 + 1,
+                slot_count,
+                n,
+                &cands,
+                &selected_mask,
+                &required_idxs,
+                &mut acc,
+                &mut path,
+                &mut top,
+            );
+            top.into_vec()
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
 
-        // 集計（触れた idx のみ）。
-        for &combo_idx in &combo {
-            for &(idx, val) in &vecs[combo_idx] {
-                if totals[idx] == 0 {
-                    touched.push(idx);
-                }
-                totals[idx] += val;
-            }
-        }
-
-        // キー算出。
-        let mut lv6 = 0usize;
-        let mut lv5 = 0usize;
-        let mut sel_lv6 = 0usize;
-        let mut level_sum = 0usize;
-        let mut link = 0i32;
-        for &idx in &touched {
-            let v = totals[idx];
-            let lv = level_of(v);
-            level_sum += lv;
-            link += v;
-            if lv == 6 {
-                lv6 += 1;
-            } else if lv == 5 {
-                lv5 += 1;
-            }
-            if selected_mask[idx] && lv == 6 {
-                sel_lv6 += 1;
-            }
-        }
-
-        // 属性ごとの下限Lv要求（totals がまだ有効なうちに判定）。
-        let req_ok = required_idxs
-            .iter()
-            .all(|&(idx, lv)| level_of(totals[idx]) >= lv);
-
-        // touched をリセット。
-        for &idx in &touched {
-            totals[idx] = 0;
-        }
-        touched.clear();
-
-        if req_ok {
-            let key: Key = (sel_lv6, lv6, lv5, level_sum, link);
-            if heap.len() < top_k {
-                heap.push(Reverse((key, combo.clone())));
-            } else if let Some(Reverse((min_key, _))) = heap.peek() {
-                if key > *min_key {
-                    heap.pop();
-                    heap.push(Reverse((key, combo.clone())));
-                }
-            }
-        }
-
-        if !next_combination(&mut combo, n) {
-            break;
-        }
-    }
-
-    // キー降順に並べる。
-    let mut ranked: Vec<(Key, Vec<usize>)> = heap.into_iter().map(|Reverse(x)| x).collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    // goodness 降順（キー降順 → combo 昇順）に並べて上位を採る。
+    ranked.sort_by(|a, b| b.cmp(a));
+    ranked.truncate(top_k);
 
     let solutions = ranked
         .into_iter()
-        .map(|(_, idxs)| {
-            let mods: Vec<Module> = idxs.iter().map(|&i| candidates[i].clone()).collect();
+        .map(|r| {
+            let mods: Vec<Module> = r
+                .combo
+                .iter()
+                .map(|&i| candidates[i as usize].clone())
+                .collect();
             build_solution(mods, selected_ids)
         })
         .collect();
@@ -451,6 +639,227 @@ mod tests {
         assert_eq!(best.lv6_count, 1);
         // C(6,5)=6 通り。
         assert_eq!(res.combinations, 6);
+    }
+
+    /// 実データ(../../extracted_game_data/owned_modules.json)で探索時間を計測する。
+    /// 実行: `cargo test --release -p bpsr-module-optimizer bench_real -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_real_data() {
+        use std::time::Instant;
+
+        #[derive(serde::Deserialize)]
+        struct P {
+            attr_id: i32,
+            #[serde(default)]
+            attr_name: String,
+            value: i32,
+        }
+        #[derive(serde::Deserialize)]
+        struct M {
+            key: i64,
+            #[serde(default)]
+            uuid: i64,
+            config_id: i32,
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            quality: i32,
+            parts: Vec<P>,
+        }
+
+        let path = std::env::var("BPSR_MODULE_DUMP")
+            .unwrap_or_else(|_| "../../extracted_game_data/owned_modules.json".to_string());
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("読込失敗 {path}: {e}"));
+        let raw: Vec<M> = serde_json::from_str(&text).expect("JSON 解析失敗");
+        let modules: Vec<Module> = raw
+            .into_iter()
+            .map(|m| Module {
+                key: m.key,
+                uuid: m.uuid,
+                config_id: m.config_id,
+                name: m.name,
+                category: category_of(m.config_id).to_string(),
+                quality: m.quality,
+                parts: m
+                    .parts
+                    .into_iter()
+                    .map(|p| Part {
+                        attr_id: p.attr_id,
+                        attr_name: p.attr_name,
+                        value: p.value,
+                    })
+                    .collect(),
+            })
+            .collect();
+        eprintln!("modules: {}", modules.len());
+
+        for &slot in &[4usize, 5usize] {
+            // ウォームアップ1回 + 計測1回。
+            let _ = optimize(&modules, &[2104], Some("all"), &[], &[], 5, slot);
+            let t = Instant::now();
+            let res = optimize(&modules, &[2104], Some("all"), &[], &[], 5, slot);
+            let dt = t.elapsed();
+            eprintln!(
+                "slot={slot} all: combos={} cand={} best_link={} elapsed={:?}",
+                res.combinations,
+                res.candidate_count,
+                res.solutions.first().map(|s| s.link_effect).unwrap_or(0),
+                dt
+            );
+        }
+    }
+
+    /// 参照実装: 全組み合わせをゼロから集計してキーを求め、goodness 降順で top_k キーを返す。
+    /// （最適化版と同じ辞書式・combo 昇順タイブレークで比較できるよう combo も返す）
+    fn naive_ranked(
+        modules: &[Module],
+        selected_ids: &[i32],
+        slot_count: usize,
+        top_k: usize,
+    ) -> Vec<(Key, Vec<usize>)> {
+        let n = modules.len();
+        let mut out: Vec<(Key, Vec<usize>)> = Vec::new();
+        let mut combo: Vec<usize> = (0..slot_count).collect();
+        loop {
+            let mut totals: HashMap<i32, i32> = HashMap::new();
+            for &c in &combo {
+                for p in &modules[c].parts {
+                    *totals.entry(p.attr_id).or_insert(0) += p.value;
+                }
+            }
+            let (mut lv6, mut lv5, mut sel_lv6, mut level_sum, mut link) = (0, 0, 0, 0usize, 0i32);
+            for (&id, &v) in &totals {
+                let lv = level_of(v);
+                level_sum += lv;
+                link += v;
+                if lv == 6 {
+                    lv6 += 1;
+                } else if lv == 5 {
+                    lv5 += 1;
+                }
+                if selected_ids.contains(&id) && lv == 6 {
+                    sel_lv6 += 1;
+                }
+            }
+            out.push(((sel_lv6, lv6, lv5, level_sum, link), combo.clone()));
+            // 次の組み合わせ（辞書式）。
+            let k = slot_count;
+            let mut i = k;
+            let mut advanced = false;
+            while i > 0 {
+                i -= 1;
+                if combo[i] != i + n - k {
+                    combo[i] += 1;
+                    for j in (i + 1)..k {
+                        combo[j] = combo[j - 1] + 1;
+                    }
+                    advanced = true;
+                    break;
+                }
+            }
+            if !advanced {
+                break;
+            }
+        }
+        // goodness 降順: キー降順 → combo 昇順。
+        out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        out.truncate(top_k);
+        out
+    }
+
+    /// 決定的な合成データ（属性15種・値1〜9・各3〜4パーツ）。
+    fn synth_modules(count: usize) -> Vec<Module> {
+        let mut s: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        (0..count)
+            .map(|k| {
+                let n_parts = 3 + (next() % 2) as usize; // 3 or 4
+                let parts = (0..n_parts)
+                    .map(|_| {
+                        let attr_id = 1000 + (next() % 15) as i32;
+                        let value = 1 + (next() % 9) as i32;
+                        Part {
+                            attr_id,
+                            attr_name: format!("a{attr_id}"),
+                            value,
+                        }
+                    })
+                    .collect();
+                module_with_parts(k as i64, 5500103, parts)
+            })
+            .collect()
+    }
+
+    fn module_with_parts(key: i64, config_id: i32, parts: Vec<Part>) -> Module {
+        Module {
+            key,
+            uuid: key,
+            config_id,
+            name: "S".into(),
+            category: category_of(config_id).to_string(),
+            quality: 4,
+            parts,
+        }
+    }
+
+    /// 最適化版が参照実装と完全一致（キー列・選択モジュール集合とも）することを検証。
+    #[test]
+    fn matches_naive_reference() {
+        let modules = synth_modules(28);
+        let selected = [1003, 1007, 1011];
+        for &slot in &[4usize, 5usize] {
+            let top_k = 12;
+            let res = optimize(&modules, &selected, None, &[], &[], top_k, slot);
+            let reference = naive_ranked(&modules, &selected, slot, top_k);
+
+            assert_eq!(res.solutions.len(), reference.len(), "解の件数 slot={slot}");
+            assert_eq!(
+                res.combinations,
+                n_choose_k(modules.len(), slot),
+                "combinations は C(n,k) と一致すべき slot={slot}"
+            );
+
+            for (i, (sol, (key, combo))) in res.solutions.iter().zip(reference.iter()).enumerate() {
+                // キー各要素の一致。
+                assert_eq!(sol.selected_lv6, key.0, "sel_lv6 mismatch slot={slot} rank={i}");
+                assert_eq!(sol.lv6_count, key.1, "lv6 mismatch slot={slot} rank={i}");
+                assert_eq!(sol.lv5_count, key.2, "lv5 mismatch slot={slot} rank={i}");
+                assert_eq!(sol.level_sum, key.3, "level_sum mismatch slot={slot} rank={i}");
+                assert_eq!(sol.link_effect, key.4, "link mismatch slot={slot} rank={i}");
+                // 選択されたモジュール集合（key=モジュールキー）も一致。
+                let got: std::collections::BTreeSet<i64> =
+                    sol.modules.iter().map(|m| m.key).collect();
+                let want: std::collections::BTreeSet<i64> =
+                    combo.iter().map(|&c| modules[c].key).collect();
+                assert_eq!(got, want, "module set mismatch slot={slot} rank={i}");
+            }
+        }
+    }
+
+    /// スレッド並列でも結果が決定的（2回実行で同一）であることを検証。
+    #[test]
+    fn deterministic_across_runs() {
+        let modules = synth_modules(40);
+        let a = optimize(&modules, &[1005], None, &[], &[], 10, 5);
+        let b = optimize(&modules, &[1005], None, &[], &[], 10, 5);
+        let keys = |r: &OptimizeResult| -> Vec<(usize, i32, Vec<i64>)> {
+            r.solutions
+                .iter()
+                .map(|s| {
+                    let mut ks: Vec<i64> = s.modules.iter().map(|m| m.key).collect();
+                    ks.sort_unstable();
+                    (s.level_sum, s.link_effect, ks)
+                })
+                .collect()
+        };
+        assert_eq!(keys(&a), keys(&b));
     }
 
     #[test]

@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] 
 prost = "0.14"
 log = "0.4"
 env_logger = "0.11"
+rayon = "1"
 
 # 実行時自己昇格（管理者へ runas で再起動）に使用。
 [target.'cfg(windows)'.dependencies]
