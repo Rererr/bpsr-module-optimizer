@@ -1,6 +1,6 @@
 [package]
 name = "bpsr-module-optimizer"
-version = "0.5.0"
+version = "0.6.0"
 description = "Star Resonance モジュール最適化ツール（所持モジュールから戦闘力スコア最大の枠を探索。4/5枠に対応）"
 authors = ["Rererr"]
 edition = "2021"

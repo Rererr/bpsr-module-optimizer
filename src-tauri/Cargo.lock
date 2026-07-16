@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "bpsr-module-optimizer"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bpsr-core",
  "env_logger",
