@@ -43,6 +43,7 @@ export interface Solution {
   lv6_count: number;
   lv5_count: number;
   selected_lv6: number;
+  selected_present: number; // 選択属性のうち結果に存在する数（Lv1以上）。ランキング最優先キー
   level_sum: number;
   breakdown: AttrBreakdown[];
 }

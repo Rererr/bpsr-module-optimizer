@@ -181,6 +181,9 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
                 )}
               </div>
 
+              {/* targetAttrs は渡さない: 保存時の targetIds は breakdown の selected かつ level>=1
+                  （＝存在した目標のみ）由来で total === selected_present となり「一部含められず」
+                  チップは構造上出ないため。名前列挙用メタも不要。 */}
               <SolutionCard
                 solution={b.solution}
                 targetIds={new Set(b.targetIds)}

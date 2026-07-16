@@ -29,7 +29,11 @@ import { FavoritesPanel } from "./components/FavoritesPanel";
 const CATEGORIES = ["all", "attack", "guardian", "support"];
 const TOP_K_OPTIONS = [3, 5, 10];
 const SLOT_COUNT_OPTIONS = [4, 5];
-// 旧データ（slotCount 欠落）や不正値のフォールバック既定値。
+// 新規インストール時、および slotCount 導入前の旧 lastSearch を復元した時の初期スロット数。
+// 前向きに5枠を既定にする（restored.slotCount ?? INITIAL_SLOT_COUNT）。
+const INITIAL_SLOT_COUNT = 5;
+// slotCount 導入前（＝4枠時代）の旧プリセットを適用する時だけのフォールバック値（applyPreset 専用）。
+// 当時の枠数を保つため後方互換で4枠のまま維持する。新規/旧lastSearch の初期値は INITIAL_SLOT_COUNT。
 const DEFAULT_SLOT_COUNT = 4;
 
 // 再起動時に復元する検索条件。
@@ -43,6 +47,11 @@ interface LastSearch {
 }
 
 type Tab = "results" | "favorites";
+
+// 処理時間を人間可読へ整形（1秒未満は ms、それ以上は秒2桁）。
+function formatElapsed(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
+}
 
 export default function App() {
   const { t, categoryLabel } = useI18n();
@@ -58,7 +67,7 @@ export default function App() {
   const [category, setCategory] = useState<string>(() => restored.category ?? "all");
   const [topK, setTopK] = useState<number>(() => restored.topK ?? 5);
   const [slotCount, setSlotCount] = useState<number>(
-    () => restored.slotCount ?? DEFAULT_SLOT_COUNT,
+    () => restored.slotCount ?? INITIAL_SLOT_COUNT,
   );
   // 属性ごとの下限レベル（attr_id -> level、0/未設定=制約なし）。
   const [requireLevels, setRequireLevels] = useState<Record<number, number>>(
@@ -73,6 +82,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("results");
   const [status, setStatus] = useState<StatusDto | null>(null);
   const [result, setResult] = useState<OptimizeResult | null>(null);
+  // 直近の探索の処理時間（ミリ秒、フロント往復計測）。結果サマリーに表示する。
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,9 +152,13 @@ export default function App() {
         // hardExcl トグルにより、除外指定属性をハード/ソフトいずれか一方へ振り分ける。
         const hardExcludeIds = hardExcl ? eIds : [];
         const softExcludeIds = hardExcl ? [] : eIds;
+        // 明示的に下限Lvが設定された目標のみ必須要求として渡す。下限Lv未指定の目標は
+        // バックエンドのランキング（選択属性の存在数を最優先で最大化）でソフトに優先される
+        // ため、含められる場合は自然に結果へ入り、含められない場合は黙って除外される。
         const requirements = tIds
           .map((id) => [id, reqLevels[id] ?? 0] as [number, number])
           .filter(([, lv]) => lv > 0);
+        const startedAt = performance.now();
         const res = await optimize({
           selectedIds: tIds,
           category: cat === "all" ? null : cat,
@@ -153,6 +168,7 @@ export default function App() {
           topK: k,
           slotCount: slots,
         });
+        setElapsedMs(performance.now() - startedAt);
         setResult(res);
         if (res.solutions.length === 0) {
           setError(
@@ -166,6 +182,7 @@ export default function App() {
       } catch (e) {
         setError(String(e));
         setResult(null);
+        setElapsedMs(null);
       } finally {
         setLoading(false);
       }
@@ -451,7 +468,7 @@ export default function App() {
               />
 
               {result && result.solutions.length > 0 && (
-                <div className="mb-3 flex items-center justify-between text-xs text-slate-400">
+                <div className="mb-3 flex items-center justify-between gap-2 text-xs text-slate-400">
                   <span>
                     {t("results.summary", {
                       sets: result.solutions.length,
@@ -459,6 +476,11 @@ export default function App() {
                       combos: result.combinations.toLocaleString(),
                     })}
                   </span>
+                  {elapsedMs !== null && (
+                    <span className="shrink-0 tabular-nums text-slate-500">
+                      {t("results.elapsed", { t: formatElapsed(elapsedMs) })}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -470,6 +492,7 @@ export default function App() {
                       solution={s}
                       rank={i + 1}
                       targetIds={targetSet}
+                      targetAttrs={targetAttrs}
                       isFavorite={favorites.isFavorite(s)}
                       onToggleFavorite={() => favorites.toggle(s)}
                     />

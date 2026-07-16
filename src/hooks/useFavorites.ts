@@ -45,9 +45,10 @@ export function useFavorites(): UseFavorites {
 
   const toggle = useCallback((solution: Solution) => {
     const id = buildIdOf(solution);
-    // 目標属性は解（breakdown.selected）から復元し、スナップショットと整合させる。
+    // 目標属性は解（存在した目標＝breakdown.selected かつ level>=1）から復元し、スナップショットと
+    // 整合させる。level ガードにより保存 targetIds 数 === selected_present が構造的に保証される。
     const targetIds = solution.breakdown
-      .filter((b) => b.selected)
+      .filter((b) => b.selected && b.level >= 1)
       .map((b) => b.attr_id);
     setFavorites((prev) => {
       if (prev.some((f) => f.id === id)) return prev.filter((f) => f.id !== id);
