@@ -12,12 +12,15 @@
 //!   （Lv6/Lv5数・レベル合計・評価リンク）から除外する。真のリンク効果（表示用）には含まれる。
 //!
 //! ランキング（辞書式・すべて最大化）:
-//!   1. 選択属性が Lv6 到達した数（選択を優先）
-//!   2. Lv6 属性の総数（ソフト除外属性は含まない）
-//!   3. Lv5 属性の総数（ソフト除外属性は含まない）
-//!   4. 全属性レベルの合計（ソフト除外属性は含まない）
-//!   5. 評価リンク `eval_link`（ソフト除外を除いた属性値の合計）
-//!   6. ソフト除外属性値の合計 `excl` の最小化（同点タイのみで効く）
+//!   1. 選択属性が結果に存在する数（Lv1以上＝値≥1）。「選んだ属性はできるだけ含める」を最優先で
+//!      表現するソフト嗜好。含められる目標は全て含み、含められない目標は黙って除外される
+//!      （目標未選択時は全解で 0 のため後続キーが従来どおり支配する）。
+//!   2. 選択属性が Lv6 到達した数（選択を優先）
+//!   3. Lv6 属性の総数（ソフト除外属性は含まない）
+//!   4. Lv5 属性の総数（ソフト除外属性は含まない）
+//!   5. 全属性レベルの合計（ソフト除外属性は含まない）
+//!   6. 評価リンク `eval_link`（ソフト除外を除いた属性値の合計）
+//!   7. ソフト除外属性値の合計 `excl` の最小化（同点タイのみで効く）
 //!
 //! 探索方式: C(n, slot_count) の全列挙だが、辞書式に枠を深さ優先で選び、ランキングキーを
 //! [`Accum`] で差分更新する（共有プレフィックスの再集計を避ける）。最初の枠を rayon で
@@ -71,7 +74,7 @@ struct Cand {
 }
 
 /// DFS で差分更新するランキング集計。add/remove は「触れた属性数」に比例した O(1) 相当で
-/// キー要素（選択Lv6数・Lv6数・Lv5数・レベル合計・評価リンク・ソフト除外合計）を保つ。
+/// キー要素（選択存在数・選択Lv6数・Lv6数・Lv5数・レベル合計・評価リンク・ソフト除外合計）を保つ。
 /// 属性値は正なので add でレベルは単調増加し、level_sum の usize 減算は起きない。
 /// ソフト除外属性（`soft_excl_mask`）はレベル遷移の簿記（lv6/lv5/level_sum/sel_lv6/eval_link）
 /// に一切混ぜず、`excl` にのみ値を加減算する。
@@ -81,6 +84,8 @@ struct Accum {
     lv6: usize,
     lv5: usize,
     sel_lv6: usize,
+    /// 選択（目標）属性のうち結果に存在する数（合計値≥1＝Lv1以上）。ソフト嗜好の最優先キー。
+    sel_present: usize,
     /// 評価対象リンク（ソフト除外を除いた counted 属性値の合計）。
     eval_link: i32,
     /// ソフト除外属性値の合計（最小化対象）。
@@ -95,6 +100,7 @@ impl Accum {
             lv6: 0,
             lv5: 0,
             sel_lv6: 0,
+            sel_present: 0,
             eval_link: 0,
             excl: 0,
         }
@@ -130,6 +136,10 @@ impl Accum {
                     }
                     if new_lv == 6 {
                         self.sel_lv6 += 1;
+                    }
+                    // 値は正なので old_lv==0（不在）からの遷移は必ず存在(Lv1+)化する。
+                    if old_lv == 0 {
+                        self.sel_present += 1;
                     }
                 }
             }
@@ -169,6 +179,10 @@ impl Accum {
                     if new_lv == 6 {
                         self.sel_lv6 += 1;
                     }
+                    // 除去で合計が0（不在）へ戻る遷移は存在数を1減らす。
+                    if new_lv == 0 {
+                        self.sel_present -= 1;
+                    }
                 }
             }
             self.totals[idx] = new;
@@ -179,6 +193,7 @@ impl Accum {
     #[inline]
     fn key(&self) -> Key {
         (
+            self.sel_present,
             self.sel_lv6,
             self.lv6,
             self.lv5,
@@ -384,6 +399,20 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
         level_of(acc.totals[a] + ctx.attr_bounds.topr(a, start, r)) >= threshold_lv
     };
 
+    // 成分0: 選択属性の存在数(Lv1到達)上界。現在不在の選択属性のうち、残り枠で値≥1に到達しうる
+    // ものを全て存在化できると楽観視する（過小評価しない健全な上界）。
+    let ub_present = acc.sel_present
+        + ctx
+            .selected_attr_idxs
+            .iter()
+            .filter(|&&a| level_of(acc.totals[a]) == 0 && reach(a, 1))
+            .count();
+    match ub_present.cmp(&worst.0) {
+        Ordering::Less => return true,
+        Ordering::Greater => return false,
+        Ordering::Equal => {}
+    }
+
     // 成分1: 選択属性の Lv6 到達数上界。
     let ub_sel6 = acc.sel_lv6
         + ctx
@@ -391,7 +420,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) < 6 && reach(a, 6))
             .count();
-    match ub_sel6.cmp(&worst.0) {
+    match ub_sel6.cmp(&worst.1) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
@@ -404,7 +433,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) < 6 && reach(a, 6))
             .count();
-    match ub_lv6.cmp(&worst.1) {
+    match ub_lv6.cmp(&worst.2) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
@@ -418,7 +447,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) <= 4 && reach(a, 5))
             .count();
-    match ub_lv5.cmp(&worst.2) {
+    match ub_lv5.cmp(&worst.3) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
@@ -426,7 +455,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
 
     // 成分4: レベル合計上界（G_r）。
     let ub_ls = acc.level_sum + ctx.g_bound.topr(start, r) as usize;
-    match ub_ls.cmp(&worst.3) {
+    match ub_ls.cmp(&worst.4) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
@@ -434,7 +463,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
 
     // 成分5: 評価リンク上界（W_r）。
     let ub_lk = acc.eval_link + ctx.w_bound.topr(start, r);
-    match ub_lk.cmp(&worst.4) {
+    match ub_lk.cmp(&worst.5) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
@@ -442,7 +471,7 @@ fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Ke
 
     // 成分6: ソフト除外合計は残り枠で増える一方（非負値）なので、現在値がそのまま
     // Reverse としての上界になる。
-    Reverse(acc.excl) < worst.5
+    Reverse(acc.excl) < worst.6
 }
 
 /// 残り (slot_count - depth) 枠を index `start` 以降から選ぶ再帰列挙。
@@ -582,6 +611,8 @@ pub struct Solution {
     pub lv5_count: usize,
     /// 選択属性のうち Lv6 に到達した数。
     pub selected_lv6: usize,
+    /// 選択属性のうち結果に存在する数（Lv1以上）。ランキング最優先キーの実体。
+    pub selected_present: usize,
     /// 全属性レベルの合計（ソフト除外属性は含まない）。
     pub level_sum: usize,
     /// 全属性の内訳（レベル降順、ソフト除外属性も含む）。
@@ -596,7 +627,8 @@ pub struct OptimizeResult {
 }
 
 /// 辞書式比較キー（すべて最大化。末尾の `Reverse<i32>` はソフト除外合計の最小化）。
-type Key = (usize, usize, usize, usize, i32, Reverse<i32>);
+/// 要素順: (選択存在数, 選択Lv6数, Lv6数, Lv5数, レベル合計, 評価リンク, Reverse(ソフト除外合計))。
+type Key = (usize, usize, usize, usize, usize, i32, Reverse<i32>);
 
 /// 入力のバリデーション。目標属性・下限Lv指定対象が除外属性（ソフト/ハード問わず）と
 /// 重複していないかを確認する。黙って片方を優先せず、意味のあるメッセージで拒否する。
@@ -912,6 +944,10 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
         .iter()
         .filter(|b| !b.soft_excluded && b.selected && b.level == 6)
         .count();
+    let selected_present = breakdown
+        .iter()
+        .filter(|b| !b.soft_excluded && b.selected && b.level >= 1)
+        .count();
     let level_sum = breakdown
         .iter()
         .filter(|b| !b.soft_excluded)
@@ -931,6 +967,7 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
         lv6_count,
         lv5_count,
         selected_lv6,
+        selected_present,
         level_sum,
         breakdown,
     }
@@ -1021,6 +1058,74 @@ mod tests {
         let res2 = optimize(&modules, &[9], None, &[], &[], &[(9, 4)], 5, 4)
             .expect("optimize should succeed");
         assert_eq!(res2.solutions.len(), 1);
+    }
+
+    #[test]
+    fn prefers_including_selected_over_dropping_it() {
+        // 2枠。選択属性9を低Lvで含む案 vs. 9を捨てて非選択をLv6×2にする案。
+        // 存在数を最優先するため、9を含む案（存在数1）が優先されるはず（Lv6数が減っても）。
+        let modules = vec![
+            module(1, 5500103, &[(9, 3)]),  // 選択9=Lv1
+            module(2, 5500103, &[(5, 20)]), // 非選択=Lv6
+            module(3, 5500103, &[(6, 20)]), // 非選択=Lv6
+        ];
+        let res =
+            optimize(&modules, &[9], None, &[], &[], &[], 5, 2).expect("optimize should succeed");
+        let best = &res.solutions[0];
+        assert_eq!(best.selected_present, 1, "選択属性9が結果に含まれるはず");
+        assert!(
+            best.modules.iter().any(|m| m.key == 1),
+            "9を持つモジュール1が採用されるはず"
+        );
+        // 存在数を捨ててLv6×2を採る {2,3} は最良ではない。
+        let keys: std::collections::BTreeSet<i64> = best.modules.iter().map(|m| m.key).collect();
+        assert_ne!(keys, [2, 3].into_iter().collect());
+    }
+
+    #[test]
+    fn unincludable_selected_is_silently_ignored() {
+        // どのモジュールにも存在しない属性を選択しても、解ゼロにはならず（黙って無視され）
+        // 通常どおり結果が返る。存在数は 0。
+        let modules = vec![
+            module(1, 5500103, &[(1, 5)]),
+            module(2, 5500103, &[(1, 5)]),
+            module(3, 5500103, &[(1, 5)]),
+        ];
+        let res =
+            optimize(&modules, &[999], None, &[], &[], &[], 5, 2).expect("optimize should succeed");
+        assert!(
+            !res.solutions.is_empty(),
+            "含められない目標でも解は消えない"
+        );
+        assert_eq!(res.solutions[0].selected_present, 0);
+    }
+
+    #[test]
+    fn maximizes_included_targets_over_more_lv6() {
+        // 2枠・目標[7,8,9]。目標を2つ低Lvで含む案 vs. 目標1つ+非選択でLv6×2にする案。
+        // 存在数を最優先するため、Lv6数が少なくても目標を2つ含む案が上位に来るはず。
+        let modules = vec![
+            module(1, 5500103, &[(7, 3)]),  // 目標7=Lv1
+            module(2, 5500103, &[(8, 3)]),  // 目標8=Lv1
+            module(3, 5500103, &[(9, 20)]), // 目標9=Lv6
+            module(4, 5500103, &[(5, 20)]), // 非選択=Lv6
+        ];
+        let res = optimize(&modules, &[7, 8, 9], None, &[], &[], &[], 5, 2)
+            .expect("optimize should succeed");
+        let best = &res.solutions[0];
+        // 2枠で含められる目標の最大数は2。存在数を最優先するので rank-1 は必ず2。
+        assert_eq!(
+            best.selected_present, 2,
+            "含められる目標2つを最大限含むはず"
+        );
+        // 目標1つ+非選択Lv6（存在数1・Lv6数2）の {3,4} は、Lv6数が多くても最良ではない。
+        let keys: std::collections::BTreeSet<i64> = best.modules.iter().map(|m| m.key).collect();
+        assert_ne!(
+            keys,
+            [3, 4].into_iter().collect(),
+            "Lv6数が多くても存在数の少ない案は選ばれない"
+        );
+        assert!(best.lv6_count <= 1, "存在数優先の結果Lv6数は1以下のはず");
     }
 
     #[test]
@@ -1305,8 +1410,15 @@ mod tests {
                 }
                 continue;
             }
-            let (mut lv6, mut lv5, mut sel_lv6, mut level_sum, mut eval_link, mut excl) =
-                (0, 0, 0, 0usize, 0i32, 0i32);
+            let (
+                mut lv6,
+                mut lv5,
+                mut sel_lv6,
+                mut sel_present,
+                mut level_sum,
+                mut eval_link,
+                mut excl,
+            ) = (0, 0, 0, 0usize, 0usize, 0i32, 0i32);
             for (&id, &v) in &totals {
                 if soft_exclude_ids.contains(&id) {
                     excl += v;
@@ -1320,12 +1432,26 @@ mod tests {
                 } else if lv == 5 {
                     lv5 += 1;
                 }
-                if selected_ids.contains(&id) && lv == 6 {
-                    sel_lv6 += 1;
+                if selected_ids.contains(&id) {
+                    if lv == 6 {
+                        sel_lv6 += 1;
+                    }
+                    // totals は combo に含まれる属性のみ（値≥1）なので lv>=1＝存在。
+                    if lv >= 1 {
+                        sel_present += 1;
+                    }
                 }
             }
             out.push((
-                (sel_lv6, lv6, lv5, level_sum, eval_link, Reverse(excl)),
+                (
+                    sel_present,
+                    sel_lv6,
+                    lv6,
+                    lv5,
+                    level_sum,
+                    eval_link,
+                    Reverse(excl),
+                ),
                 combo.clone(),
             ));
             // 次の組み合わせ（辞書式）。
@@ -1427,17 +1553,21 @@ mod tests {
             for (i, (sol, (key, combo))) in res.solutions.iter().zip(reference.iter()).enumerate() {
                 // キー各要素の一致。
                 assert_eq!(
-                    sol.selected_lv6, key.0,
+                    sol.selected_present, key.0,
+                    "sel_present mismatch slot={slot} rank={i}"
+                );
+                assert_eq!(
+                    sol.selected_lv6, key.1,
                     "sel_lv6 mismatch slot={slot} rank={i}"
                 );
-                assert_eq!(sol.lv6_count, key.1, "lv6 mismatch slot={slot} rank={i}");
-                assert_eq!(sol.lv5_count, key.2, "lv5 mismatch slot={slot} rank={i}");
+                assert_eq!(sol.lv6_count, key.2, "lv6 mismatch slot={slot} rank={i}");
+                assert_eq!(sol.lv5_count, key.3, "lv5 mismatch slot={slot} rank={i}");
                 assert_eq!(
-                    sol.level_sum, key.3,
+                    sol.level_sum, key.4,
                     "level_sum mismatch slot={slot} rank={i}"
                 );
                 assert_eq!(
-                    sol.eval_link, key.4,
+                    sol.eval_link, key.5,
                     "eval_link mismatch slot={slot} rank={i}"
                 );
                 let excl: i32 = sol
@@ -1446,7 +1576,7 @@ mod tests {
                     .filter(|b| b.soft_excluded)
                     .map(|b| b.value)
                     .sum();
-                assert_eq!(Reverse(excl), key.5, "excl mismatch slot={slot} rank={i}");
+                assert_eq!(Reverse(excl), key.6, "excl mismatch slot={slot} rank={i}");
                 // 選択されたモジュール集合（key=モジュールキー）も一致。
                 let got: std::collections::BTreeSet<i64> =
                     sol.modules.iter().map(|m| m.key).collect();
@@ -1493,9 +1623,9 @@ mod tests {
         assert_eq!(res.candidate_count, 4);
     }
 
-    /// top-k のランキングキー列（sel_lv6..excl）を取り出す。同点タイの列挙メンバーが
+    /// top-k のランキングキー列（sel_present..excl）を取り出す。同点タイの列挙メンバーが
     /// 変わりうる性能施策（requirements 途中剪定・k-支配則）の等価性検証に使う。
-    fn key_seq(r: &OptimizeResult) -> Vec<(usize, usize, usize, usize, i32, i32)> {
+    fn key_seq(r: &OptimizeResult) -> Vec<(usize, usize, usize, usize, usize, i32, i32)> {
         r.solutions
             .iter()
             .map(|s| {
@@ -1506,6 +1636,7 @@ mod tests {
                     .map(|b| b.value)
                     .sum();
                 (
+                    s.selected_present,
                     s.selected_lv6,
                     s.lv6_count,
                     s.lv5_count,
@@ -1609,18 +1740,19 @@ mod tests {
         modules: &[Module],
         ctx: &str,
     ) {
-        assert_eq!(sol.selected_lv6, key.0, "sel_lv6 mismatch {ctx}");
-        assert_eq!(sol.lv6_count, key.1, "lv6 mismatch {ctx}");
-        assert_eq!(sol.lv5_count, key.2, "lv5 mismatch {ctx}");
-        assert_eq!(sol.level_sum, key.3, "level_sum mismatch {ctx}");
-        assert_eq!(sol.eval_link, key.4, "eval_link mismatch {ctx}");
+        assert_eq!(sol.selected_present, key.0, "sel_present mismatch {ctx}");
+        assert_eq!(sol.selected_lv6, key.1, "sel_lv6 mismatch {ctx}");
+        assert_eq!(sol.lv6_count, key.2, "lv6 mismatch {ctx}");
+        assert_eq!(sol.lv5_count, key.3, "lv5 mismatch {ctx}");
+        assert_eq!(sol.level_sum, key.4, "level_sum mismatch {ctx}");
+        assert_eq!(sol.eval_link, key.5, "eval_link mismatch {ctx}");
         let excl: i32 = sol
             .breakdown
             .iter()
             .filter(|b| b.soft_excluded)
             .map(|b| b.value)
             .sum();
-        assert_eq!(Reverse(excl), key.5, "excl mismatch {ctx}");
+        assert_eq!(Reverse(excl), key.6, "excl mismatch {ctx}");
         let got: std::collections::BTreeSet<i64> = sol.modules.iter().map(|m| m.key).collect();
         let want: std::collections::BTreeSet<i64> = combo.iter().map(|&c| modules[c].key).collect();
         assert_eq!(got, want, "module set mismatch {ctx}");

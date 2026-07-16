@@ -47,6 +47,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "tab.favorites": "お気に入り",
     "results.summary":
       "上位 {sets} セット / 候補 {candidates} 件から {combos} 通りを探索",
+    "results.elapsed": "処理時間 {t}",
     "empty.noModulesTitle": "所持モジュール未取得",
     "empty.noModulesDesc":
       "管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）",
@@ -78,6 +79,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.evalLink": "評価スコア",
     "card.softExcluded": "ソフト除外",
     "card.selectedLv6": "選択Lv6 ×{n}",
+    "card.targetsPartial": "目標 {n}/{total} 含む",
+    "card.targetsMissing": "含められなかった目標: {names}",
+    "card.targetsMissingGeneric": "一部の目標属性を含められませんでした",
     "card.favRemove": "お気に入りから削除",
     "card.favAdd": "お気に入りに追加",
     "fav.emptyTitle": "お気に入りのビルドはまだありません",
@@ -140,6 +144,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "tab.favorites": "Favorites",
     "results.summary":
       "Top {sets} sets / searched {combos} combinations from {candidates} candidates",
+    "results.elapsed": "Time {t}",
     "empty.noModulesTitle": "No modules captured yet",
     "empty.noModulesDesc":
       "Launch as administrator and change maps in-game to capture them (captured data is saved automatically and restored on the next launch).",
@@ -171,6 +176,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.evalLink": "Eval Score",
     "card.softExcluded": "Soft-excluded",
     "card.selectedLv6": "Target Lv6 ×{n}",
+    "card.targetsPartial": "{n}/{total} targets included",
+    "card.targetsMissing": "Couldn't include: {names}",
+    "card.targetsMissingGeneric": "Some target attributes couldn't be included",
     "card.favRemove": "Remove from favorites",
     "card.favAdd": "Add to favorites",
     "fav.emptyTitle": "No favorite builds yet",
