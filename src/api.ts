@@ -18,7 +18,10 @@ export function captureStatus(): Promise<StatusDto> {
 export interface OptimizeArgs {
   selectedIds: number[];
   category: string | null;
+  /// ハード除外: いずれかを含むモジュールを候補から丸ごと除外。
   excludeIds: number[];
+  /// ソフト除外: モジュールは候補に残すが、該当属性はランキング集計から除外する。
+  softExcludeIds: number[];
   /// 属性ごとの下限レベル [attr_id, min_level]。
   requirements: [number, number][];
   topK: number;
@@ -31,6 +34,7 @@ export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
     selectedIds: args.selectedIds,
     category: args.category,
     excludeIds: args.excludeIds,
+    softExcludeIds: args.softExcludeIds,
     requirements: args.requirements,
     topK: args.topK,
     slotCount: args.slotCount,
