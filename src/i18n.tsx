@@ -115,6 +115,10 @@ const DICT: Record<Lang, Record<string, string>> = {
     "compare.title": "ビルド比較（{n}件）",
     "compare.lv6": "Lv6数",
     "compare.lv5": "Lv5数",
+    "footer.contact": "お問い合わせ",
+    "footer.reportGithub": "GitHubで報告",
+    "footer.show": "フッターを表示",
+    "footer.hide": "フッターを隠す",
   },
   en: {
     "app.title": "BPSR Module Optimizer",
@@ -212,6 +216,10 @@ const DICT: Record<Lang, Record<string, string>> = {
     "compare.title": "Build comparison ({n})",
     "compare.lv6": "Lv6 count",
     "compare.lv5": "Lv5 count",
+    "footer.contact": "Contact",
+    "footer.reportGithub": "Report on GitHub",
+    "footer.show": "Show footer",
+    "footer.hide": "Hide footer",
   },
 };
 

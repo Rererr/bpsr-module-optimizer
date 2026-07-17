@@ -25,6 +25,7 @@ import { SolutionCard } from "./components/SolutionCard";
 import { PresetBar } from "./components/PresetBar";
 import { ConditionSummary } from "./components/ConditionSummary";
 import { FavoritesPanel } from "./components/FavoritesPanel";
+import { Footer } from "./components/Footer";
 
 const CATEGORIES = ["all", "attack", "guardian", "support"];
 const TOP_K_OPTIONS = [3, 5, 10];
@@ -78,6 +79,10 @@ export default function App() {
   // 旧データ（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
   // true にフォールバックして従来の挙動を保つ（新規保存時は必ず明示するため ?? は効かない）。
   const [hardExclude, setHardExclude] = useState<boolean>(() => restored.hardExclude ?? true);
+  // フッター表示設定。設定画面が無いため lastSearch とは別キーで独立永続化する（既定=表示ON）。
+  const [footerVisible, setFooterVisible] = useState<boolean>(() =>
+    loadJSON(STORAGE_KEYS.footerVisible, true),
+  );
 
   const [tab, setTab] = useState<Tab>("results");
   const [status, setStatus] = useState<StatusDto | null>(null);
@@ -122,6 +127,10 @@ export default function App() {
       hardExclude,
     });
   }, [selection, requireLevels, category, topK, slotCount, hardExclude]);
+
+  useEffect(() => {
+    saveJSON(STORAGE_KEYS.footerVisible, footerVisible);
+  }, [footerVisible]);
 
   const refreshStatus = useCallback(() => {
     captureStatus().then(setStatus).catch(() => {});
@@ -293,6 +302,8 @@ export default function App() {
         onReloadDump={onReloadDump}
         busy={busy}
         slotCount={slotCount}
+        footerVisible={footerVisible}
+        onShowFooter={() => setFooterVisible(true)}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -531,6 +542,8 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {footerVisible && <Footer onHide={() => setFooterVisible(false)} />}
     </div>
   );
 }
