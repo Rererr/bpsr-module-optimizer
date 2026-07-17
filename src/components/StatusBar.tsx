@@ -1,4 +1,4 @@
-import { RefreshCw, Radio, FileJson, CircleAlert, Languages } from "lucide-react";
+import { RefreshCw, Radio, FileJson, CircleAlert, Languages, Eye } from "lucide-react";
 import type { StatusDto } from "../types";
 import { useI18n } from "../i18n";
 
@@ -7,6 +7,10 @@ interface Props {
   onReloadDump: () => void;
   busy: boolean;
   slotCount: number;
+  // フッターの ×（フッター側にある閉じるボタン）で非表示にした後、再表示するための唯一の導線。
+  // 設定画面が無いため、フッターが非表示のときだけヘッダーにこのボタンを出す。
+  footerVisible: boolean;
+  onShowFooter: () => void;
 }
 
 function stateColor(s: StatusDto["capture_state"]): string {
@@ -20,7 +24,14 @@ function stateColor(s: StatusDto["capture_state"]): string {
   }
 }
 
-export function StatusBar({ status, onReloadDump, busy, slotCount }: Props) {
+export function StatusBar({
+  status,
+  onReloadDump,
+  busy,
+  slotCount,
+  footerVisible,
+  onShowFooter,
+}: Props) {
   const { t, lang, setLang } = useI18n();
 
   const stateLabel = (s: StatusDto["capture_state"]): string => {
@@ -106,6 +117,17 @@ export function StatusBar({ status, onReloadDump, busy, slotCount }: Props) {
           <Languages size={13} />
           {lang === "ja" ? "EN" : "日本語"}
         </button>
+
+        {!footerVisible && (
+          <button
+            onClick={onShowFooter}
+            aria-label={t("footer.show")}
+            title={t("footer.show")}
+            className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-slate-200 transition hover:bg-slate-700"
+          >
+            <Eye size={13} />
+          </button>
+        )}
       </div>
     </header>
   );

@@ -8,6 +8,7 @@ export const STORAGE_KEYS = {
   favorites: "favorites.v1",
   lastSearch: "lastSearch.v1",
   lang: "lang.v1",
+  footerVisible: "footerVisible.v1",
 } as const;
 
 /** JSON を読み込む。未保存・破損時は fallback を返し、破損は警告ログに残す。 */
