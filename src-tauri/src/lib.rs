@@ -5,6 +5,8 @@ mod attrs;
 mod capture;
 mod elevation;
 mod optimizer;
+#[cfg(feature = "gpu")]
+mod optimizer_gpu;
 mod state;
 
 use attrs::AttrMeta;
@@ -154,8 +156,13 @@ async fn optimize(
     // 想定外の値は握り潰さず 4〜5 に丸める。
     let slot_count = slot_count.clamp(4, 5);
     // 全探索は重いので blocking プールへ退避し UI スレッドを塞がない。
+    // GPU版ビルド（feature "gpu"）では optimizer_gpu 経由（失敗時は内部でCPUへ委譲）。
     tauri::async_runtime::spawn_blocking(move || {
-        optimizer::optimize(
+        #[cfg(feature = "gpu")]
+        let f = optimizer_gpu::optimize;
+        #[cfg(not(feature = "gpu"))]
+        let f = optimizer::optimize;
+        f(
             &modules,
             &selected_ids,
             category.as_deref(),
@@ -223,6 +230,22 @@ pub fn run() {
             }
             // ライブキャプチャ開始（要管理者権限）。
             capture::spawn(app.handle().clone(), shared.clone());
+
+            // GPU版ビルドはウィンドウタイトルで区別できるようにする（失敗しても起動は続行）。
+            #[cfg(feature = "gpu")]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let title = window.title().unwrap_or_default();
+                    if let Err(e) = window.set_title(&format!("{title} (GPU)")) {
+                        log::warn!("[startup] ウィンドウタイトル設定失敗: {e}");
+                    }
+                }
+                // GPUデバイス初期化・パイプラインコンパイルを先食いしておく（初回クエリの
+                // +0.2〜1.5s を隠す）。探索クエリを塞がないよう別スレッドで実行する
+                // （optimize コマンドと同じ optimizer_gpu::gpu_context の OnceLock を叩くだけ）。
+                std::thread::spawn(optimizer_gpu::prewarm);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

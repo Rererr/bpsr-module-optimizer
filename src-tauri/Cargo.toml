@@ -19,6 +19,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# GPU探索版ビルド専用（詳細はプロジェクトメモリ・src-tauri/src/optimizer_gpu.rs 参照）。
+gpu = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -30,6 +34,15 @@ prost = "0.14"
 log = "0.4"
 env_logger = "0.11"
 rayon = "1"
+# dx12 バックエンドは wgpu-hal 29.0.4 が直接依存する windows 0.62 系と、依存先
+# gpu-allocator 0.28.0 が固定する windows 0.61 系がクレートグラフ上で衝突しビルド不能
+# （upstream の依存不整合）。RTX 5070 は Vulkan を全面サポートするため vulkan のみ有効化する。
+wgpu = { version = "29", optional = true, default-features = false, features = [
+    "vulkan",
+    "wgsl",
+    "std",
+] }
+pollster = { version = "0.4", optional = true }
 
 # 実行時自己昇格（管理者へ runas で再起動）に使用。
 [target.'cfg(windows)'.dependencies]

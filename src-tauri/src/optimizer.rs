@@ -49,12 +49,12 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 const ATTR_THRESHOLDS: [i32; 6] = [1, 4, 8, 12, 16, 20];
 
 #[inline]
-fn level_of(v: i32) -> usize {
+pub(crate) fn level_of(v: i32) -> usize {
     ATTR_THRESHOLDS.iter().take_while(|&&t| v >= t).count()
 }
 
 /// n 個から k 個を選ぶ組み合わせ数 C(n, k)。中間計算を u128 で行い桁溢れを避ける。
-fn n_choose_k(n: usize, k: usize) -> u64 {
+pub(crate) fn n_choose_k(n: usize, k: usize) -> u64 {
     if k > n {
         return 0;
     }
@@ -68,9 +68,11 @@ fn n_choose_k(n: usize, k: usize) -> u64 {
 }
 
 /// 探索候補1件の寄与。属性は密インデックス化済み。
-struct Cand {
+/// GPU探索（optimizer_gpu）もこの密表現をそのままカーネルへアップロードするため pub(crate)。
+#[derive(Clone)]
+pub(crate) struct Cand {
     /// (属性の密インデックス, 値)。
-    parts: Vec<(u32, i32)>,
+    pub(crate) parts: Vec<(u32, i32)>,
 }
 
 /// DFS で差分更新するランキング集計。add/remove は「触れた属性数」に比例した O(1) 相当で
@@ -78,7 +80,10 @@ struct Cand {
 /// 属性値は正なので add でレベルは単調増加し、level_sum の usize 減算は起きない。
 /// ソフト除外属性（`soft_excl_mask`）はレベル遷移の簿記（lv6/lv5/level_sum/sel_lv6/eval_link）
 /// に一切混ぜず、`excl` にのみ値を加減算する。
-struct Accum {
+///
+/// GPU探索（optimizer_gpu）は append バッファから読み戻した combo の厳密キー再計算に
+/// `new`/`add`/`key` を使う（`remove` は DFS の後退にのみ使うため非公開のまま）。
+pub(crate) struct Accum {
     totals: Vec<i32>,
     level_sum: usize,
     lv6: usize,
@@ -93,7 +98,7 @@ struct Accum {
 }
 
 impl Accum {
-    fn new(n_attr: usize) -> Self {
+    pub(crate) fn new(n_attr: usize) -> Self {
         Self {
             totals: vec![0; n_attr],
             level_sum: 0,
@@ -107,7 +112,7 @@ impl Accum {
     }
 
     #[inline]
-    fn add(&mut self, cand: &Cand, selected_mask: &[bool], soft_excl_mask: &[bool]) {
+    pub(crate) fn add(&mut self, cand: &Cand, selected_mask: &[bool], soft_excl_mask: &[bool]) {
         for &(idx, val) in &cand.parts {
             let idx = idx as usize;
             if soft_excl_mask[idx] {
@@ -191,7 +196,7 @@ impl Accum {
     }
 
     #[inline]
-    fn key(&self) -> Key {
+    pub(crate) fn key(&self) -> Key {
         (
             self.sel_present,
             self.sel_lv6,
@@ -206,9 +211,10 @@ impl Accum {
 
 /// top-k 保持用の要素。全順序 = キー昇順 → combo 降順（＝ goodness: キー降順・combo 昇順）。
 /// これにより同点キーは辞書式に小さい combo を優先し、スレッド数に依らず結果が決定的になる。
-struct Ranked {
-    key: Key,
-    combo: Vec<u32>,
+/// GPU探索（optimizer_gpu）も CPU シードと GPU 側結果を同じ比較器でマージするため pub(crate)。
+pub(crate) struct Ranked {
+    pub(crate) key: Key,
+    pub(crate) combo: Vec<u32>,
 }
 
 impl PartialEq for Ranked {
@@ -231,13 +237,15 @@ impl PartialOrd for Ranked {
 }
 
 /// 上位 k 件を保持する最小ヒープ（root = 保持中で最も劣る要素）。
-struct TopK {
+/// GPU探索（optimizer_gpu）は CPU シードと GPU 由来の厳密再計算済み combo を同じ TopK へ
+/// マージし、チャンク間の閾値更新にも `worst_key` を使う。
+pub(crate) struct TopK {
     heap: BinaryHeap<Reverse<Ranked>>,
     cap: usize,
 }
 
 impl TopK {
-    fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             heap: BinaryHeap::new(),
             cap,
@@ -246,7 +254,7 @@ impl TopK {
 
     /// 現在の combo（path）とキーを候補として投入する。combo の確保は採用時のみ。
     #[inline]
-    fn offer(&mut self, key: Key, path: &[u32]) {
+    pub(crate) fn offer(&mut self, key: Key, path: &[u32]) {
         if self.heap.len() < self.cap {
             self.heap.push(Reverse(Ranked {
                 key,
@@ -269,13 +277,13 @@ impl TopK {
         }
     }
 
-    fn into_vec(self) -> Vec<Ranked> {
+    pub(crate) fn into_vec(self) -> Vec<Ranked> {
         self.heap.into_iter().map(|Reverse(r)| r).collect()
     }
 
     /// TopK が満杯の時のみ、現在の最劣キーを返す（未充填なら枝刈りの根拠がないため None）。
     #[inline]
-    fn worst_key(&self) -> Option<Key> {
+    pub(crate) fn worst_key(&self) -> Option<Key> {
         if self.heap.len() < self.cap {
             return None;
         }
@@ -628,7 +636,9 @@ pub struct OptimizeResult {
 
 /// 辞書式比較キー（すべて最大化。末尾の `Reverse<i32>` はソフト除外合計の最小化）。
 /// 要素順: (選択存在数, 選択Lv6数, Lv6数, Lv5数, レベル合計, 評価リンク, Reverse(ソフト除外合計))。
-type Key = (usize, usize, usize, usize, usize, i32, Reverse<i32>);
+/// GPU探索（optimizer_gpu）はシェーダ内のキー packing・CPU側の閾値比較の両方でこの並びに
+/// 依存するため pub(crate)。
+pub(crate) type Key = (usize, usize, usize, usize, usize, i32, Reverse<i32>);
 
 /// 入力のバリデーション。目標属性・下限Lv指定対象が除外属性（ソフト/ハード問わず）と
 /// 重複していないかを確認する。黙って片方を優先せず、意味のあるメッセージで拒否する。
@@ -705,21 +715,71 @@ pub fn optimize(
     )
 }
 
-/// `optimize` の実体。requirements 途中剪定・B&B 上界剪定を個別に on/off できる
-/// （どちらも最良キーを変えない性能施策のため、テストで等価性を検証するために分離している）。
-#[allow(clippy::too_many_arguments)]
-fn optimize_with_opts(
-    modules: &[Module],
-    selected_ids: &[i32],
+/// [`prepare`] の出力: 候補フィルタ（カテゴリ／ハード除外）→ 属性密インデックス化 →
+/// w(m) 降順ソートまでを終えた探索前状態。[`search_cpu`]/[`assemble`] の両方が必要とする
+/// 情報を保持する。CPU/GPU 探索（optimizer_gpu）で共有するため pub(crate)。
+pub(crate) struct Prepared<'a> {
+    /// カテゴリ絞り込み・ハード除外適用後の候補（元の modules 順）。
+    /// [`Ranked::combo`] の各要素はこの配列へのインデックス。
+    pub(crate) candidates: Vec<&'a Module>,
+    /// w(m) 降順に並べ替えた密表現。`cands[i]` は探索順 index `i` に対応する。
+    pub(crate) cands: Vec<Cand>,
+    /// order[i] = 探索順 index i に対応する `candidates` でのインデックス。
+    pub(crate) order: Vec<usize>,
+    pub(crate) n_attr: usize,
+    pub(crate) selected_mask: Vec<bool>,
+    pub(crate) soft_excl_mask: Vec<bool>,
+    /// 属性ごとの下限レベル要求（密インデックスへ解決済み）。
+    pub(crate) required_idxs: Vec<(usize, usize)>,
+    pub(crate) candidate_count: usize,
+    pub(crate) combinations: u64,
+    /// true なら探索を行わず必ず空の結果（候補不足、または必須属性がどの候補にも存在しない）。
+    pub(crate) trivially_empty: bool,
+    pub(crate) selected_ids: &'a [i32],
+    pub(crate) soft_exclude_ids: &'a [i32],
+}
+
+impl<'a> Prepared<'a> {
+    /// 指定した探索順 position（`cands`/`order` への index、0..cands.len()）の集合だけに
+    /// 絞った Prepared を作る（GPU探索の CPU シード用）。position は呼び出し側で重複を
+    /// 排除し、通常は昇順で渡すこと（探索順 index の昇順 = w(m) 降順なので、その順序性を
+    /// シード側でも保てば [`search_cpu`] の B&B 枝刈りが効きやすい。ただし正当性は順序に
+    /// 依存しない）。`candidates`/`required_idxs` 等は元の密インデックス空間を共有するため
+    /// 複製のみで済む。
+    // feature "gpu" が無効なビルドでは呼び出し元（optimizer_gpu）ごと存在しないため未使用警告
+    // が出るが、CPU探索の挙動には影響しない実装詳細のメソッドなので allow で抑制する。
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn subset(&self, positions: &[usize]) -> Prepared<'a> {
+        Prepared {
+            candidates: self.candidates.clone(),
+            cands: positions.iter().map(|&p| self.cands[p].clone()).collect(),
+            order: positions.iter().map(|&p| self.order[p]).collect(),
+            n_attr: self.n_attr,
+            selected_mask: self.selected_mask.clone(),
+            soft_excl_mask: self.soft_excl_mask.clone(),
+            required_idxs: self.required_idxs.clone(),
+            candidate_count: self.candidate_count,
+            combinations: self.combinations,
+            trivially_empty: self.trivially_empty,
+            selected_ids: self.selected_ids,
+            soft_exclude_ids: self.soft_exclude_ids,
+        }
+    }
+}
+
+/// 候補フィルタ（カテゴリ／ハード除外）→ 属性密インデックス化 → w(m) 降順ソートまでを行う。
+/// [`search_cpu`]/[`assemble`] の両方が必要とする状態を [`Prepared`] にまとめて返す。
+/// 探索方式（CPU DFS / GPU 全数評価）に依存しないロジックのため、GPU探索
+/// （optimizer_gpu）もこの関数をそのまま呼び出して共有する。
+pub(crate) fn prepare<'a>(
+    modules: &'a [Module],
+    selected_ids: &'a [i32],
     category: Option<&str>,
     hard_exclude_ids: &[i32],
-    soft_exclude_ids: &[i32],
+    soft_exclude_ids: &'a [i32],
     requirements: &[(i32, usize)],
-    top_k: usize,
     slot_count: usize,
-    use_requirement_pruning: bool,
-    use_bnb_pruning: bool,
-) -> Result<OptimizeResult, String> {
+) -> Result<Prepared<'a>, String> {
     validate_inputs(
         selected_ids,
         hard_exclude_ids,
@@ -740,10 +800,19 @@ fn optimize_with_opts(
 
     let n = candidates.len();
     if slot_count == 0 || n < slot_count {
-        return Ok(OptimizeResult {
-            solutions: Vec::new(),
+        return Ok(Prepared {
+            candidates,
+            cands: Vec::new(),
+            order: Vec::new(),
+            n_attr: 0,
+            selected_mask: Vec::new(),
+            soft_excl_mask: Vec::new(),
+            required_idxs: Vec::new(),
             candidate_count: n,
             combinations: 0,
+            trivially_empty: true,
+            selected_ids,
+            soft_exclude_ids,
         });
     }
 
@@ -778,10 +847,19 @@ fn optimize_with_opts(
         match id_to_idx.get(&attr_id) {
             Some(&idx) => required_idxs.push((idx, lv)),
             None => {
-                return Ok(OptimizeResult {
-                    solutions: Vec::new(),
+                return Ok(Prepared {
+                    candidates,
+                    cands: Vec::new(),
+                    order: Vec::new(),
+                    n_attr,
+                    selected_mask,
+                    soft_excl_mask,
+                    required_idxs: Vec::new(),
                     candidate_count: n,
                     combinations: 0,
+                    trivially_empty: true,
+                    selected_ids,
+                    soft_exclude_ids,
                 });
             }
         }
@@ -790,11 +868,10 @@ fn optimize_with_opts(
     // 組み合わせ総数は直接算出（下限Lv要求で除外される分も含む＝旧実装と同義）。
     let combinations = n_choose_k(n, slot_count);
 
-    // B&B の探索順を決めるため、各候補の counted 値合計 w(m)（=非ソフト除外パーツの値合計）と
-    // counted レベル合計 g(m)（=非ソフト除外パーツの level_of 合計。閾値間隔が非減少なので
-    // 「基点0からの到達レベル」がどの属性に足しても超えないレベル増分の健全な上界になる）を
+    // B&B の探索順を決めるため、各候補の counted 値合計 w(m)（=非ソフト除外パーツの値合計）を
     // 元の候補順で求める。w(m) 降順（同点は元index昇順）に並べ替えると良い解を早く見つけやすく
-    // なり、B&B の枝刈りが早期から効く。
+    // なり、B&B の枝刈りが早期から効く（counted レベル合計 g(m) は search_cpu 側で cands から
+    // 直接再計算する。soft_excl_mask による除外は dense idx でも元 attr_id でも同義）。
     let w: Vec<i32> = candidates
         .iter()
         .map(|m| {
@@ -802,16 +879,6 @@ fn optimize_with_opts(
                 .iter()
                 .filter(|p| !soft_exclude_ids.contains(&p.attr_id))
                 .map(|p| p.value)
-                .sum()
-        })
-        .collect();
-    let g: Vec<i32> = candidates
-        .iter()
-        .map(|m| {
-            m.parts
-                .iter()
-                .filter(|p| !soft_exclude_ids.contains(&p.attr_id))
-                .map(|p| level_of(p.value) as i32)
                 .sum()
         })
         .collect();
@@ -831,10 +898,72 @@ fn optimize_with_opts(
                 .collect(),
         })
         .collect();
-    let w_sorted: Vec<i32> = order.iter().map(|&oi| w[oi]).collect();
-    let g_sorted: Vec<i32> = order.iter().map(|&oi| g[oi]).collect();
 
-    let attr_bounds = AttrBounds::build(&cands, n_attr, &soft_excl_mask, slot_count);
+    Ok(Prepared {
+        candidates,
+        cands,
+        order,
+        n_attr,
+        selected_mask,
+        soft_excl_mask,
+        required_idxs,
+        candidate_count: n,
+        combinations,
+        trivially_empty: false,
+        selected_ids,
+        soft_exclude_ids,
+    })
+}
+
+/// AttrBounds/SuffixSum（B&B 上界剪定用）を構築し、rayon 並列 DFS で top-k を求める。
+/// `prepared` は [`prepare`] の出力（w(m) 降順ソート済み、`prepared.cands.len()` 件を探索）。
+/// GPU探索（optimizer_gpu）は「w(m)降順上位min(n,60)件」∪「requirements属性ごとの値上位10件」
+/// （`build_seed_positions`）に絞った [`Prepared::subset`] をここへ渡すことで、GPU 全数評価の
+/// 足切り閾値を得る CPU 厳密シードとしても使う。
+pub(crate) fn search_cpu(
+    prepared: &Prepared,
+    top_k: usize,
+    slot_count: usize,
+    use_requirement_pruning: bool,
+    use_bnb_pruning: bool,
+) -> Vec<Ranked> {
+    if prepared.trivially_empty {
+        return Vec::new();
+    }
+
+    let n = prepared.cands.len();
+    let cands = &prepared.cands;
+    let order = &prepared.order;
+    let selected_mask = &prepared.selected_mask;
+    let soft_excl_mask = &prepared.soft_excl_mask;
+    let n_attr = prepared.n_attr;
+
+    // B&B の上界計算に使う counted 値合計 w(m) / counted レベル合計 g(m)（探索順）。
+    // cands は既に w(m) 降順ソート済みの密表現のため、soft_excl_mask で除外パーツを弾いて
+    // 直接再計算すれば prepare 時点の値と一致する（g(m): 閾値間隔が非減少なので「基点0からの
+    // 到達レベル」がどの属性に足しても超えないレベル増分の健全な上界になる）。
+    let w_sorted: Vec<i32> = cands
+        .iter()
+        .map(|c| {
+            c.parts
+                .iter()
+                .filter(|&&(idx, _)| !soft_excl_mask[idx as usize])
+                .map(|&(_, v)| v)
+                .sum()
+        })
+        .collect();
+    let g_sorted: Vec<i32> = cands
+        .iter()
+        .map(|c| {
+            c.parts
+                .iter()
+                .filter(|&&(idx, _)| !soft_excl_mask[idx as usize])
+                .map(|&(_, v)| level_of(v) as i32)
+                .sum()
+        })
+        .collect();
+
+    let attr_bounds = AttrBounds::build(cands, n_attr, soft_excl_mask, slot_count);
     let w_bound = SuffixSum::build(&w_sorted, slot_count);
     let g_bound = SuffixSum::build(&g_sorted, slot_count);
     let counted_attr_idxs: Vec<usize> = (0..n_attr).filter(|&a| !soft_excl_mask[a]).collect();
@@ -843,11 +972,11 @@ fn optimize_with_opts(
     let ctx = SearchCtx {
         slot_count,
         n,
-        cands: &cands,
-        order: &order,
-        selected_mask: &selected_mask,
-        soft_excl_mask: &soft_excl_mask,
-        required_idxs: &required_idxs,
+        cands,
+        order,
+        selected_mask,
+        soft_excl_mask,
+        required_idxs: &prepared.required_idxs,
         attr_bounds: &attr_bounds,
         w_bound: &w_bound,
         g_bound: &g_bound,
@@ -867,7 +996,7 @@ fn optimize_with_opts(
             let mut acc = Accum::new(n_attr);
             let mut path = vec![0u32; slot_count];
             let mut top = TopK::new(top_k);
-            acc.add(&cands[i0], &selected_mask, &soft_excl_mask);
+            acc.add(&cands[i0], selected_mask, soft_excl_mask);
             path[0] = i0 as u32;
             dfs(1, i0 + 1, &ctx, &mut acc, &mut path, &mut top);
             top.into_vec()
@@ -880,25 +1009,66 @@ fn optimize_with_opts(
     // goodness 降順（キー降順 → combo 昇順）に並べて上位を採る。
     ranked.sort_by(|a, b| b.cmp(a));
     ranked.truncate(top_k);
+    ranked
+}
 
+/// [`search_cpu`]（または GPU 探索でマージ済みの結果）が返した Ranked から
+/// [`OptimizeResult`] を組み立てる。combo は探索順ではなく `prepared.candidates` への
+/// 元インデックス（探索終了時点で元index昇順へ写像・ソート済み）。
+pub(crate) fn assemble(prepared: &Prepared, ranked: Vec<Ranked>) -> OptimizeResult {
     let solutions = ranked
         .into_iter()
         .map(|r| {
-            // combo は dfs 内で既に元index昇順へ写像・ソート済み。
             let mods: Vec<Module> = r
                 .combo
                 .iter()
-                .map(|&i| candidates[i as usize].clone())
+                .map(|&i| prepared.candidates[i as usize].clone())
                 .collect();
-            build_solution(mods, selected_ids, soft_exclude_ids)
+            build_solution(mods, prepared.selected_ids, prepared.soft_exclude_ids)
         })
         .collect();
 
-    Ok(OptimizeResult {
+    OptimizeResult {
         solutions,
-        candidate_count: n,
-        combinations,
-    })
+        candidate_count: prepared.candidate_count,
+        combinations: prepared.combinations,
+    }
+}
+
+/// `optimize` の実体。requirements 途中剪定・B&B 上界剪定を個別に on/off できる
+/// （どちらも最良キーを変えない性能施策のため、テストで等価性を検証するために分離している）。
+/// [`prepare`] → [`search_cpu`] → [`assemble`] を順に呼ぶだけ（GPU探索 optimizer_gpu も
+/// 同じ3関数を共有し、search_cpu の代わりに GPU カーネルで全数評価する）。
+#[allow(clippy::too_many_arguments)]
+fn optimize_with_opts(
+    modules: &[Module],
+    selected_ids: &[i32],
+    category: Option<&str>,
+    hard_exclude_ids: &[i32],
+    soft_exclude_ids: &[i32],
+    requirements: &[(i32, usize)],
+    top_k: usize,
+    slot_count: usize,
+    use_requirement_pruning: bool,
+    use_bnb_pruning: bool,
+) -> Result<OptimizeResult, String> {
+    let prepared = prepare(
+        modules,
+        selected_ids,
+        category,
+        hard_exclude_ids,
+        soft_exclude_ids,
+        requirements,
+        slot_count,
+    )?;
+    let ranked = search_cpu(
+        &prepared,
+        top_k,
+        slot_count,
+        use_requirement_pruning,
+        use_bnb_pruning,
+    );
+    Ok(assemble(&prepared, ranked))
 }
 
 /// 選択された各モジュールから内訳と各指標を再構成して Solution を作る。
