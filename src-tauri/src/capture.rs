@@ -45,6 +45,9 @@ pub fn spawn(app: tauri::AppHandle, state: SharedState) {
         // 自動保存のセーフティ用。直近に保存した内容署名と保存時刻を保持する。
         let mut last_sig: Option<u64> = None;
         let mut last_save: Option<Instant> = None;
+        // 最後に modules-updated を発火した際の内容署名（自動再探索の抑制用）。
+        // 保存用の last_sig とは別管理（保存は 5s スロットリングされるため流用不可）。
+        let mut last_emitted_sig: Option<u64> = None;
 
         while let Some(env) = rx.recv().await {
             if !matches!(env.op, Pkt::WorldEnterSnapshot) {
@@ -80,8 +83,17 @@ pub fn spawn(app: tauri::AppHandle, state: SharedState) {
                 s.last_update_ms = Some(now_ms());
                 s.source = "capture".to_string();
             }
-            log::info!("[capture] 所持モジュール {count} 件を更新");
-            let _ = app.emit("modules-updated", count);
+            // 内容が変わった時だけ再探索イベントを発火する。装備を変えていない
+            // 単なるゾーン移動での無駄な自動再探索（CPU 突沸）を避ける。
+            if last_emitted_sig != Some(sig) {
+                last_emitted_sig = Some(sig);
+                log::info!("[capture] 所持モジュール {count} 件を更新（再探索を通知）");
+                let _ = app.emit("modules-updated", count);
+            } else {
+                log::debug!(
+                    "[capture] 所持モジュール {count} 件（内容変化なし・再探索をスキップ）"
+                );
+            }
 
             // 取得内容を最新1件として自動保存（owned_modules.json を上書き）。
             if let Some(snap) = snapshot {
