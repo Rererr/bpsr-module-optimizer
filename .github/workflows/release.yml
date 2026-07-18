@@ -15,6 +15,8 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       # arduino/setup-protoc は Node 20 ランタイムで非推奨警告が出るため、
       # Windows ランナー標準の Chocolatey で protoc を導入する。
@@ -37,3 +39,28 @@ jobs:
           releaseName: ${{ github.ref_name }}
           releaseDraft: true
           prerelease: false
+
+      # gpu 構成は tauri build ではコンパイルエラーしか検知できない（clippy の警告は
+      # 別途チェックしないと通ってしまう）ため、GPUビルド前に明示的な lint ゲートを挟む。
+      # 等価性テスト（#[ignore]、実GPU必須）はこのCIでは実行しない。ローカル手動運用のまま。
+      - name: Lint GPU feature
+        run: cargo clippy --release --features gpu --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      # GPU版（feature "gpu"）を追加ビルドし、ファイル名に _gpu を挿入して同じドラフト
+      # リリースへ添付する。アプリの productName/identifier は CPU 版と共通（インストールは
+      # 相互上書き＝ユーザーはリリースページでどちらか一方を選ぶ）。
+      - name: Build GPU variant (NSIS)
+        run: npx tauri build -f gpu
+
+      - name: Rename and upload GPU installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe"
+          if ($nsis.Count -ne 1) { throw "NSIS installer not found or ambiguous: $($nsis.Count)" }
+          $gpuName = $nsis.Name -replace "_x64-setup\.exe$", "_gpu_x64-setup.exe"
+          if ($gpuName -eq $nsis.Name) { throw "unexpected installer name: $($nsis.Name)" }
+          $gpuPath = Join-Path $nsis.DirectoryName $gpuName
+          Move-Item $nsis.FullName $gpuPath
+          gh release upload "${{ github.ref_name }}" "$gpuPath" --clobber
