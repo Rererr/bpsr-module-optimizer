@@ -632,6 +632,10 @@ pub struct OptimizeResult {
     pub solutions: Vec<Solution>,
     pub candidate_count: usize,
     pub combinations: u64,
+    /// 実際に使われた探索エンジン。"cpu" | "gpu"。
+    /// 通常ビルドは常に "cpu"。GPUビルド（feature "gpu"）は GPU 探索が成功しマージまで
+    /// 完遂した場合のみ "gpu"（optimizer_gpu の cpu_fallback を通った全経路は "cpu"）。
+    pub engine: String,
 }
 
 /// 辞書式比較キー（すべて最大化。末尾の `Reverse<i32>` はソフト除外合計の最小化）。
@@ -884,8 +888,41 @@ pub(crate) fn prepare<'a>(
         .collect();
 
     // order[i] = 探索順 index i に対応する元の候補配列(candidates)でのインデックス。
+    // requirements が1つ以上ある場合、いずれかの required 属性を持つ候補（担い手）を
+    // 先頭ブロックへ、残りを後方ブロックへ分けた上で、各ブロック内は従来どおり w(m) 降順
+    // （同点は元index昇順）にソートする。GPU Kernel P の requirements 実現可能性チェック
+    // （attr_suffix_max、suffix の単一最大値）は「残り候補の suffix に担い手が1人もいない」
+    // ケースで最も強く効くが、担い手が探索順に散在していると、ほとんどのプレフィックスの
+    // suffix に何らかの担い手が残ってしまい枝刈りが発火しない。担い手を先頭に集約すると、
+    // 担い手を1つも含まないプレフィックス（探索順で後方の候補のみから構成される。
+    // n_carriers=C とすると全体の C(n-C,kp)/C(n,kp) 相当、多くの場合9割超）は、suffix にも
+    // 担い手が存在しなくなるためこの枝刈りが厳密十分条件として機能する（実測で requirements
+    // 条件の枝刈り率が大幅改善）。requirements が無い場合は現在の順序を一切変えない
+    // （plain系のタイブレーク挙動を保つ）。
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| w[b].cmp(&w[a]).then(a.cmp(&b)));
+    if required_idxs.is_empty() {
+        order.sort_by(|&a, &b| w[b].cmp(&w[a]).then(a.cmp(&b)));
+    } else {
+        let required_attr_ids: HashSet<i32> = requirements
+            .iter()
+            .filter(|&&(_, lv)| lv > 0)
+            .map(|&(attr_id, _)| attr_id)
+            .collect();
+        let is_carrier: Vec<bool> = candidates
+            .iter()
+            .map(|m| {
+                m.parts
+                    .iter()
+                    .any(|p| required_attr_ids.contains(&p.attr_id))
+            })
+            .collect();
+        order.sort_by(|&a, &b| {
+            is_carrier[b]
+                .cmp(&is_carrier[a])
+                .then(w[b].cmp(&w[a]))
+                .then(a.cmp(&b))
+        });
+    }
 
     // 密インデックス変換と並べ替えを同時に行う（探索は以後この並び順で行う）。
     let cands: Vec<Cand> = order
@@ -1015,7 +1052,9 @@ pub(crate) fn search_cpu(
 /// [`search_cpu`]（または GPU 探索でマージ済みの結果）が返した Ranked から
 /// [`OptimizeResult`] を組み立てる。combo は探索順ではなく `prepared.candidates` への
 /// 元インデックス（探索終了時点で元index昇順へ写像・ソート済み）。
-pub(crate) fn assemble(prepared: &Prepared, ranked: Vec<Ranked>) -> OptimizeResult {
+/// `engine`: 実際に使われた探索エンジン（"cpu" | "gpu"）。呼び出し元が確定した値を渡す
+/// （GPU探索 optimizer_gpu は成功時のみ "gpu"、trivially_empty・フォールバック時は "cpu"）。
+pub(crate) fn assemble(prepared: &Prepared, ranked: Vec<Ranked>, engine: &str) -> OptimizeResult {
     let solutions = ranked
         .into_iter()
         .map(|r| {
@@ -1032,6 +1071,7 @@ pub(crate) fn assemble(prepared: &Prepared, ranked: Vec<Ranked>) -> OptimizeResu
         solutions,
         candidate_count: prepared.candidate_count,
         combinations: prepared.combinations,
+        engine: engine.to_string(),
     }
 }
 
@@ -1068,7 +1108,7 @@ fn optimize_with_opts(
         use_requirement_pruning,
         use_bnb_pruning,
     );
-    Ok(assemble(&prepared, ranked))
+    Ok(assemble(&prepared, ranked, "cpu"))
 }
 
 /// 選択された各モジュールから内訳と各指標を再構成して Solution を作る。

@@ -52,6 +52,8 @@ export interface OptimizeResult {
   solutions: Solution[];
   candidate_count: number;
   combinations: number;
+  // 実際に使われた探索エンジン。"cpu" | "gpu"。通常ビルドは常に "cpu"。
+  engine: string;
 }
 
 export interface StatusDto {
