@@ -12,6 +12,15 @@
 // （高々 slot_count-1 回の探索）に削減する。総プレフィックス数 P=C(n,slot_count-1) は
 // n<=300 なら u32 に確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
 //
+// プレフィックス単位枝刈り（Params.prune_enabled でON/OFF切替）: プレフィックスの7カウンタ
+// 計算後・末尾ループ開始前に、optimizer.rs の should_prune の r=1（残り1枠のみ）相当の
+// 上界キーを suffix_max テーブル（optimizer_gpu.rs の build_suffix_max_bytes、suffix の
+// 単一最大値＝top-1）から計算し、CPUシード閾値（accept判定と同じ hi/lo 2値）を厳密に
+// 下回るなら末尾ループを丸ごとスキップする。各成分は「suffix の単一最大値を独立に楽観視」
+// した健全な上界（実到達可能キー以上であることが保証され、過小評価は絶対にしない）であり、
+// 等号（上界==閾値）は絶対に刈らない（accept 判定と同じ半開区間: hi>threshold_hi ||
+// (hi==threshold_hi && lo>=threshold_lo)）。
+//
 // レベル閾値・キー packing のビット割当・レベル遷移差分更新の規則は
 // src-tauri/src/optimizer.rs の ATTR_THRESHOLDS / Accum::add・remove / Key と
 // 完全に一致させること（変更時は両方同時に直す。ここがずれると等価性テストで検出される）。
@@ -50,6 +59,7 @@ struct Params {
     req_count: u32,
     threshold_hi: u32,
     threshold_lo: u32,
+    prune_enabled: u32,
 }
 
 @group(0) @binding(0) var<storage, read> binom: array<u32>;
@@ -57,7 +67,12 @@ struct Params {
 @group(0) @binding(2) var<storage, read> params: Params;
 @group(0) @binding(3) var<storage, read> requirements: array<ReqEntry>;
 @group(0) @binding(4) var<storage, read_write> out_combos: array<u32>;
-@group(0) @binding(5) var<storage, read_write> counter: atomic<u32>;
+// counters[0]=appended件数, counters[1]=pruned プレフィックス件数（枝刈りの効き計測用）。
+@group(0) @binding(5) var<storage, read_write> counters: array<atomic<u32>, 2>;
+// プレフィックス単位枝刈り用の suffix 最大値（r=1）テーブル。optimizer_gpu.rs の
+// build_suffix_max_bytes と同じレイアウト:
+// [attr_suffix_max: n_attr*(n+1) i32] ++ [w_suffix_max: (n+1) i32] ++ [g_suffix_max: (n+1) i32]
+@group(0) @binding(6) var<storage, read> suffix_max: array<i32>;
 
 // 候補データのワークグループ共有メモリキャッシュ（協調ロード。300*3*8B=7.2KB）。
 // 末尾ループのグローバルメモリ読みをワークグループ内で共有し、メモリ律速を緩和する。
@@ -89,6 +104,18 @@ fn level_of(v: i32) -> u32 {
 
 fn binom_at(i: u32, j: u32) -> u32 {
     return binom[i * params.table_cols + j];
+}
+
+// suffix_max テーブルの各セクションへのアクセサ（optimizer_gpu.rs の build_suffix_max_bytes
+// と同じレイアウト・同じ意味）。s は探索順 index（0..=n）。
+fn attr_suffix_max_at(a: u32, s: u32) -> i32 {
+    return suffix_max[a * (params.n + 1u) + s];
+}
+fn w_suffix_max_at(s: u32) -> i32 {
+    return suffix_max[params.n_attr * (params.n + 1u) + s];
+}
+fn g_suffix_max_at(s: u32) -> i32 {
+    return suffix_max[params.n_attr * (params.n + 1u) + (params.n + 1u) + s];
 }
 
 @compute @workgroup_size(256)
@@ -183,6 +210,51 @@ fn main(
         }
     }
 
+    // --- プレフィックス単位枝刈り（r=1: 残り1枠を最も都合よく埋めた場合の健全な上界）。---
+    if (params.prune_enabled != 0u) {
+        let ub_start = prefix_last + 1u;
+        var ub_sel_present = sel_present;
+        var ub_sel_lv6 = sel_lv6;
+        var ub_lv6 = lv6;
+        var ub_lv5 = lv5;
+        for (var a: u32 = 0u; a < params.n_attr; a = a + 1u) {
+            let bit = 1u << a;
+            if ((params.soft_excl_mask & bit) != 0u) {
+                continue;
+            }
+            let cur = totals[a];
+            let cur_lv = level_of(cur);
+            let best_add = attr_suffix_max_at(a, ub_start);
+            let reach_lv = level_of(cur + best_add);
+            if ((params.selected_mask & bit) != 0u) {
+                if (cur_lv == 0u && reach_lv >= 1u) {
+                    ub_sel_present = ub_sel_present + 1u;
+                }
+                if (cur_lv < 6u && reach_lv >= 6u) {
+                    ub_sel_lv6 = ub_sel_lv6 + 1u;
+                }
+            }
+            if (cur_lv < 6u && reach_lv >= 6u) {
+                ub_lv6 = ub_lv6 + 1u;
+            }
+            if (cur_lv <= 4u && reach_lv >= 5u) {
+                ub_lv5 = ub_lv5 + 1u;
+            }
+        }
+        let ub_level_sum = level_sum + u32(g_suffix_max_at(ub_start));
+        let ub_eval_link = eval_link + w_suffix_max_at(ub_start);
+        let ub_hi = (ub_sel_present << 26u) | (ub_sel_lv6 << 20u) | (ub_lv6 << 14u) | (ub_lv5 << 8u) | ub_level_sum;
+        let ub_lo = (u32(ub_eval_link) << 16u) | (0xFFFFu - u32(excl));
+        // accept 判定と同じ半開区間セマンティクス。上界が閾値と同点（==）の場合は accept 側に
+        // 倒れる（!ub_accept は false）ため、絶対に刈らない。
+        let ub_accept = (ub_hi > params.threshold_hi)
+            || (ub_hi == params.threshold_hi && ub_lo >= params.threshold_lo);
+        if (!ub_accept) {
+            atomicAdd(&counters[1], 1u);
+            return;
+        }
+    }
+
     // --- 末尾候補ループ: optimizer.rs の Accum::add/remove と同じ差分更新で7カウンタを
     //     増分更新する（値は非負なので add では new_lv>=old_lv、remove では
     //     cur_lv>=new_lv が常に成り立ち、u32減算がアンダーフローすることはない）。---
@@ -252,7 +324,7 @@ fn main(
             let accept = (hi > params.threshold_hi)
                 || (hi == params.threshold_hi && lo >= params.threshold_lo);
             if (accept) {
-                let out_idx = atomicAdd(&counter, 1u);
+                let out_idx = atomicAdd(&counters[0], 1u);
                 if (out_idx < CAPACITY) {
                     let obase = out_idx * 5u;
                     for (var pos: u32 = 0u; pos < kp; pos = pos + 1u) {

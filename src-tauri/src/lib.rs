@@ -236,15 +236,31 @@ pub fn run() {
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
-                    let title = window.title().unwrap_or_default();
-                    if let Err(e) = window.set_title(&format!("{title} (GPU)")) {
+                    let base_title = window.title().unwrap_or_default();
+                    if let Err(e) = window.set_title(&format!("{base_title} (GPU)")) {
                         log::warn!("[startup] ウィンドウタイトル設定失敗: {e}");
                     }
+                    // GPUデバイス初期化・パイプラインコンパイルを先食いしておく（初回クエリの
+                    // +0.2〜1.5s を隠す）。探索クエリを塞がないよう別スレッドで実行する
+                    // （optimize コマンドと同じ optimizer_gpu::gpu_context の OnceLock を叩くだけ）。
+                    // プリウォーム失敗時（=以後の探索クエリは毎回CPUへフォールバックする）は
+                    // ウィンドウタイトルを (GPU→CPU) へ書き換え、ユーザーが計算方式の実態を
+                    // 起動直後から把握できるようにする（per-query フォールバックは結果側の
+                    // engine 表示が担うためタイトルは変えない）。
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        if optimizer_gpu::prewarm() {
+                            return;
+                        }
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            if let Err(e) = window.set_title(&format!("{base_title} (GPU→CPU)")) {
+                                log::warn!(
+                                    "[startup] プリウォーム失敗後のウィンドウタイトル設定失敗: {e}"
+                                );
+                            }
+                        }
+                    });
                 }
-                // GPUデバイス初期化・パイプラインコンパイルを先食いしておく（初回クエリの
-                // +0.2〜1.5s を隠す）。探索クエリを塞がないよう別スレッドで実行する
-                // （optimize コマンドと同じ optimizer_gpu::gpu_context の OnceLock を叩くだけ）。
-                std::thread::spawn(optimizer_gpu::prewarm);
             }
             Ok(())
         })

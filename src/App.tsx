@@ -54,6 +54,11 @@ function formatElapsed(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
+// 実際に使われた探索エンジンの表記。"(GPU)"/"(CPU)" は言語非依存の表記とし ja/en 共通。
+function formatEngine(engine: string): string {
+  return `(${engine.toUpperCase()})`;
+}
+
 export default function App() {
   const { t, categoryLabel } = useI18n();
   const [attributes, setAttributes] = useState<AttrMeta[]>([]);
@@ -489,7 +494,8 @@ export default function App() {
                   </span>
                   {elapsedMs !== null && (
                     <span className="shrink-0 tabular-nums text-slate-500">
-                      {t("results.elapsed", { t: formatElapsed(elapsedMs) })}
+                      {t("results.elapsed", { t: formatElapsed(elapsedMs) })}{" "}
+                      {formatEngine(result.engine)}
                     </span>
                   )}
                 </div>
