@@ -143,21 +143,19 @@ export function SolutionCard({
             </button>
           )}
           <div className="text-right leading-none">
+            {/* 主表示は常に link_effect（ゲーム内表記と一致する実際のリンク効果）。
+                評価に使う eval_link はソフト除外指定時のみ異なりうるため、差がある時だけ
+                下に小さく「評価スコア」として併記する（主従を入れ替えないと、ソフト除外を
+                使う通常利用で常に「最も目立つ数字がゲーム内と違う値」になってしまうため）。 */}
             <div className="text-2xl font-bold tabular-nums text-slate-100">
-              {solution.eval_link}
+              {solution.link_effect}
             </div>
-            <div className="text-[10px] text-slate-500">
-              {/* ソフト除外未使用（eval_link と link_effect が同値）ならゲーム内表記に合わせて
-                  「リンク効果」と表示する。差がある時だけ「評価スコア」であることを明示する。 */}
-              {solution.eval_link === solution.link_effect
-                ? t("card.linkEffect")
-                : t("card.evalLink")}
-            </div>
+            <div className="text-[10px] text-slate-500">{t("card.linkEffect")}</div>
             {solution.link_effect !== solution.eval_link && (
               <div className="mt-1 text-[10px] text-slate-500">
-                {t("card.linkEffect")}{" "}
+                {t("card.evalLink")}{" "}
                 <span className="font-semibold tabular-nums text-slate-400">
-                  {solution.link_effect}
+                  {solution.eval_link}
                 </span>
               </div>
             )}

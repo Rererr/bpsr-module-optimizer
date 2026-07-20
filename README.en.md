@@ -105,17 +105,19 @@ Candidate combinations are compared in the following priority order (items 4/5 s
 1. The number of selected target attributes present in the result (reaching Lv1 or higher)
 2. The number of selected target attributes that reached Lv6
 3. The total number of Lv6 attributes
-4. The sum of attribute values (excluding values of soft-excluded attributes)
+4. Link effect (the sum of attribute values; values of soft-excluded attributes are not counted)
 5. The total number of Lv5 attributes
 6. The smallness of the sum of excluded attributes' values
 
-When the Lv6 count is tied, the sum of attribute values (link effect) is compared before the Lv5
+When no soft exclusions are set, the link effect in item 4 matches the in-game "Link Effect" value.
+
+When the Lv6 count is tied, link effect (the sum of attribute values) is compared before the Lv5
 count. This avoids the counterintuitive result where having just one more Lv5 attribute would flip
-a large difference in the sum of attribute values.
+a large difference in link effect.
 
 The "Ranking Order" selector in the sidebar can swap items 4 and 5 to a **Lv5 Count First** order
-instead (for when you'd rather prioritize the number of Lv5 attributes over the sum of attribute
-values whenever the Lv6 count is tied). **Switching the order does not automatically re-search —
+instead (for when you'd rather prioritize the number of Lv5 attributes over link effect whenever
+the Lv6 count is tied). **Switching the order does not automatically re-search —
 press "Run Optimization" again after changing it.** The two orders generally can't reproduce each
 other's top result (a combination that never appears near the top under one order can be the #1
 result under the other), so each order needs its own search.
@@ -124,7 +126,7 @@ An attribute's level is treated as Lv1–Lv6 as its total attribute value reache
 
 - Target attributes get a soft "include if possible" preference. If a target can't be included, it is silently dropped (only a target with a minimum-level requirement becomes a hard condition that excludes combinations failing to meet it).
 - By default, excluding an attribute is a **soft exclude**: it is dropped from scoring only, and modules containing that attribute can still be used (in that case, combinations with a smaller sum of excluded attribute values are preferred). Enabling "fully exclude" (hard exclude) removes any module containing the excluded attribute from the candidates.
-- The "Link Effect" shown on a card is the actual total including values of excluded attributes (it can differ from the scoring value in item 4 above only when exclusions are set).
+- The large number on a card is always the actual link effect matching the in-game display. Only when a soft exclusion makes the scoring value (item 4 above) differ from it does the card also show a small "Eval Score" line below.
 
 ## Loading a JSON dump
 
