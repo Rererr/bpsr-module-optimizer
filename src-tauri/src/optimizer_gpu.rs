@@ -8,13 +8,19 @@
 //!
 //! 1. **prep（CPU・[`crate::optimizer::prepare`] を共有）**: 候補フィルタ→属性密インデックス化
 //!    →w(m)降順ソート。
-//! 2. **シード（CPU）**: 「w(m)降順上位 min(n,60) 件」∪「各 requirements 属性ごとに、その
-//!    属性の合計値が大きい順に上位10件」の和集合（[`build_seed_positions`]）で既存 B&B DFS
-//!    （[`crate::optimizer::search_cpu`]）→厳密な暫定 top-k。その k位キーを閾値とする
-//!    （真のk位キーの下界なので、閾値以上を全部拾えば真のtop-kを取りこぼさない。部分集合の
-//!    top-kは全候補でのtop-k以下という単調性による）。w降順上位だけでは
-//!    requirements を満たす解が top_k 件見つからず閾値が効かない（append 爆発）ケースを
-//!    緩和するため、requirements 属性ごとの上位も足す。
+//! 2. **シード（CPU、[`build_seed_ranked`]）**: 基本シード（「w(m)降順上位 min(n,60) 件」∪
+//!    「各 requirements 属性ごとの値上位10件」の和集合、[`build_seed_positions`]）に加え、
+//!    `selected_mask`（目標属性）ごとに個別の小さい部分集合（「w(m)降順上位40件」∪
+//!    「その属性自身の値上位15件」、[`build_selected_attr_seed_positions`]）で**別々に**
+//!    既存 B&B DFS（[`crate::optimizer::search_cpu`]）を走らせ、得られた実解の和集合
+//!    （重複除去、[`merge_seed_ranked_lists`]）から厳密な暫定 top-k を得る。その k位キーを
+//!    閾値とする（真のk位キーの下界なので、閾値以上を全部拾えば真のtop-kを取りこぼさない。
+//!    部分集合の top-kは全候補でのtop-k以下という単調性による）。目標属性ごとに個別探索する
+//!    のは、単純に全目標属性の上位N件を1つの部分集合へ混ぜると |S| が目標属性数に比例して
+//!    増えDFSコストが組合せ爆発するため（[`SEED_SELECTED_ATTR_TOP_BY_WEIGHT`] のdoc参照）。
+//!    目標属性の担い手を一切考慮しない旧実装では、目標属性がレアでw(m)降順上位に担い手が
+//!    現れないデータで閾値が (0,0)（accept全部）に退化し、CAPACITY超過に直結していた
+//!    （実測: n=300でaccept=8,694,564件、真の解はわずか10件）。
 //! 3. **GPUカーネル**（`optimize.wgsl`、workgroup 256、2Dディスパッチ、単一ディスパッチ）:
 //!    スレッド = 1組合せ ではなく、スレッド = (slot_count-1)個の「プレフィックス」組合せ
 //!    1つ。プレフィックスを combinadic で unrank した後、末尾候補を prefix_last+1..n で
@@ -33,10 +39,15 @@
 //! 4. **マージ（CPU）**: append された combo を厳密再計算（[`crate::optimizer::Accum`]）→
 //!    [`crate::optimizer::TopK`] へマージ→top-k確定→[`crate::optimizer::assemble`]。
 //!    最終順序はCPU厳密計算のみで決まるため、CPU版と完全一致する。
-//! 5. append バッファがあふれたら（counter>容量）そのままクエリ全体を CPU 探索へ
-//!    フォールバックする（再試行はしない）。atomicAdd の到達順は実行のたびに変わりうる
-//!    任意サブセットのため、部分出力から閾値を引き締めて再試行するのは不健全
-//!    （真の解を取りこぼしうる）。
+//! 5. append バッファがあふれたら（counter>容量）、[`run_gpu_search_chunked`]（本番経路）は
+//!    部分出力（有効な実解）から閾値を締め直し、全プレフィックス空間を最初から**やり直す**
+//!    リトライを最大 [`GPU_OVERFLOW_RETRY_LIMIT`] 回試みる（安全網。根本原因対策の
+//!    シード改善後はほぼ発火しない想定）。「やり直し」（毎回0番から全空間を再実行）は健全
+//!    だが、「再開」（前回の部分出力を保持したまま続きのプレフィックスだけ処理する）は
+//!    atomicAdd の到達順が試行ごとに非決定的なため不健全（真の解を取りこぼしうる）。
+//!    リトライ上限に達しても解消しなければ、そのままクエリ全体を CPU 探索へフォールバック
+//!    する（[`run_gpu_search`]・デバッグ/比較用の単一パス実装はリトライ未実装で、あふれたら
+//!    即フォールバックする）。
 //!
 //! フォールバック条件（すべて log::warn した上で [`crate::optimizer::optimize`] へ委譲。
 //! どんな失敗でもユーザーにエラーを返さず CPU で完遂する）:
@@ -67,7 +78,22 @@ use wgpu::util::DeviceExt;
 const MAX_PARTS: usize = 3;
 
 /// append バッファの容量（optimize.wgsl の `CAPACITY` と一致させること）。
+/// 拡大は却下されている: n=300 の高accept条件・n=200の複合目標では拡大しても根本原因
+/// （シードの閾値不足）が解消しない限り天井がなく溢れ続け、溢れずに済むケースでも
+/// CPUマージ（162ns/件で線形）に対しGPU側が閾値の緩さでKernel Pの枝刈りも劣化し負ける
+/// （実測: 12MiB化でも溢れるケースは溢れたまま、溢れないケースもGPU 0.64s→1.25s・
+/// CPU比で負け）。閾値の質（[`build_seed_ranked`]）とオーバーフロー時のリトライ
+/// （[`run_gpu_search_chunked`]）で対処する。
 const CAPACITY: u32 = 2_097_152;
+
+/// append バッファがオーバーフローした際、部分出力（`out_combos[0..CAPACITY]`、有効な実解）
+/// から閾値を締め直して**フル再実行**するリトライの上限回数（[`run_gpu_search_chunked`]の
+/// 「安全網」節参照）。根本原因対策（[`build_seed_ranked`]）後はこの経路はほぼ発火しない
+/// 想定のため「稀に発火する保険」として控えめな値にする。1回のリトライは全チャンクの
+/// フル再ディスパッチ（n=300 slot5 で最大20秒超）を伴うためコストが軽くない一方、
+/// 各リトライは前回よりevidenceが増える（前回の部分出力自体が実解として次の閾値の材料に
+/// なる）ため単調に改善しやすく、2回まで許容する。
+const GPU_OVERFLOW_RETRY_LIMIT: u32 = 2;
 
 /// キー packing（[`pack_key`]）で eval_link に割り当てる bit 幅は [`RankMode`] により異なる
 /// （[`pack_key`] のビット配置図参照）。理論上界がこれを超えるクエリは呼び出し側
@@ -102,6 +128,42 @@ const SEED_TOP_PER_REQUIRED_ATTR: usize = 10;
 
 /// CPUシードの w(m) 降順上位件数（`build_seed_positions` 参照）。
 const SEED_TOP_BY_WEIGHT: usize = 60;
+
+/// 目標属性（`selected_mask`）ごとの個別シード探索（[`build_selected_attr_seed_positions`]）で
+/// 使う w(m) 降順上位件数。根本原因対策（[`build_seed_ranked`] のdoc参照）: 目標属性が
+/// レアでw(m)降順の上位60件に担い手が現れないデータでは、旧実装（requirements 属性のみに
+/// per-attr top-N を足す実装で selected_mask は一切考慮していなかった）はシード部分集合に
+/// 目標属性の担い手を1人も含められず、暫定 top-k が top_k 件見つからないため閾値が
+/// (0,0)（accept全部）に退化し、実機では CAPACITY 超過に直結した（n=300 実測で
+/// accept=8,694,564 件、真の解はわずか10件）。単純に「全目標属性の上位N件を1つの部分集合へ
+/// 混ぜる」対策（`SEED_TOP_PER_REQUIRED_ATTR` と同じやり方）は正しいが、|S| が目標属性数に
+/// 比例して増えるとDFSコストが C(|S|,slot_count) で組合せ爆発する（実測: 目標属性6個×N=10で
+/// |S|≈120、n=300 slot=5 のシード時間が約50ms→約550msに悪化）。そこで目標属性ごとに
+/// 「小さい部分集合で個別に厳密探索」してから、得られた実解の和集合（[`merge_seed_ranked_lists`]、
+/// 重複除去のうえ admissible）から閾値を取る方式にする。各探索のコストは独立に小さく保たれ、
+/// 目標属性数に対して概ね線形になる（[`build_seed_ranked`] が実測ログを出す）。
+const SEED_SELECTED_ATTR_TOP_BY_WEIGHT: usize = 40;
+
+/// 目標属性ごとの個別シード探索で、その属性自身の値降順上位から追加する件数
+/// （[`SEED_SELECTED_ATTR_TOP_BY_WEIGHT`] のdoc参照）。
+const SEED_SELECTED_ATTR_TOP_FOR_ATTR: usize = 15;
+
+/// 混合シード（[`build_mixed_selected_attrs_seed_positions`]）の w(m) 降順上位件数。
+/// [`build_selected_attr_seed_positions`]（目標属性を1つずつ個別に扱う）だけでは、
+/// 複数の目標属性が**同時に**レアなデータで `sel_present>=2` の解を1つの部分集合内に
+/// 構成できず、閾値の最上位成分（sel_present）が実際より低く留まる（本モジュールの
+/// 根本原因〈目標属性が1個もシードに含まれない〉の一段軽いバージョン）。ユーザーは
+/// 所持200個以上を常用し、目標属性を複数選ぶ利用が中心のため実害が出やすい。そこで
+/// 「w(m)上位40 ∪ 全目標属性それぞれの上位[`SEED_MIXED_SELECTED_TOP_PER_ATTR`]件」を
+/// 1本の部分集合として個別シードのリストに追加する。目標属性数を m とすると
+/// |S| ≈ 40 + 5m（m=6でも70）で、組合せ爆発しない範囲に収まる。admissibility は
+/// リストを1本増やすだけなので不変（[`merge_seed_ranked_lists`] が全リストの和集合を
+/// 重複除去して統合する）。
+const SEED_MIXED_SELECTED_TOP_BY_WEIGHT: usize = 40;
+
+/// 混合シードで、目標属性それぞれの値降順上位から追加する件数
+/// （[`SEED_MIXED_SELECTED_TOP_BY_WEIGHT`] のdoc参照）。
+const SEED_MIXED_SELECTED_TOP_PER_ATTR: usize = 5;
 
 /// 2フェーズカーネル（Phase B2、[`run_gpu_search_chunked`]）のチャンクサイズ（プレフィックス数）。
 /// 2^23=8,388,608。workgroup_size=256 換算で 32768 workgroups となり、1D dispatch 上限
@@ -558,37 +620,220 @@ fn build_req_entries(required_idxs: &[(usize, usize)]) -> Vec<u8> {
     bytes
 }
 
+/// 指定属性（密インデックス）の値降順（同点は position 昇順、決定的）で上位 `count` 件の
+/// position を返す共通ヘルパー。[`build_seed_positions`]（requirements 属性ごと）と
+/// [`build_selected_attr_seed_positions`]（目標属性ごとの個別シード）の両方で使う。
+fn top_positions_for_attr(prepared: &Prepared, attr_idx: usize, count: usize) -> Vec<usize> {
+    let n = prepared.cands.len();
+    let mut by_attr: Vec<(usize, i32)> = (0..n)
+        .map(|pos| {
+            let v = prepared.cands[pos]
+                .parts
+                .iter()
+                .find(|&&(idx, _)| idx as usize == attr_idx)
+                .map_or(0, |&(_, v)| v);
+            (pos, v)
+        })
+        .collect();
+    by_attr.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    by_attr.into_iter().take(count).map(|(p, _)| p).collect()
+}
+
 /// requirements 属性ごとに、その属性の合計値が大きい順の上位 [`SEED_TOP_PER_REQUIRED_ATTR`]
 /// 件と、w(m) 降順上位 [`SEED_TOP_BY_WEIGHT`] 件との和集合（sorted-order position の集合、
 /// 昇順）を作る。CPUシードをこの集合に絞ることで、requirements があっても閾値算出に
 /// 使える暫定 top-k が見つかりやすくなる（w(m) 降順上位だけでは、requirements 属性の値が
 /// 低い候補ばかりで占められ、要求を満たす解が全く見つからない場合がある）。
+///
+/// 目標属性（`selected_mask`）はここには含めない。旧実装はこの関数だけがシードの全てだった
+/// ため、目標属性がレアで w(m) 降順上位に担い手が現れないデータでは閾値が (0,0)（accept全部）
+/// に退化する根本原因になっていた（[`SEED_SELECTED_ATTR_TOP_BY_WEIGHT`] のdoc参照）。
+/// 目標属性ごとのカバレッジは呼び出し元の [`build_seed_ranked`] が別の小さい部分集合として
+/// 個別に扱う（この関数の返り値と1つの集合へ混ぜない。理由も同docを参照）。
 fn build_seed_positions(prepared: &Prepared) -> Vec<usize> {
     let n = prepared.cands.len();
     let mut positions: std::collections::BTreeSet<usize> = (0..n.min(SEED_TOP_BY_WEIGHT)).collect();
 
     for &(attr_idx, _) in &prepared.required_idxs {
-        let mut by_attr: Vec<(usize, i32)> = (0..n)
-            .map(|pos| {
-                let v = prepared.cands[pos]
-                    .parts
-                    .iter()
-                    .find(|&&(idx, _)| idx as usize == attr_idx)
-                    .map_or(0, |&(_, v)| v);
-                (pos, v)
-            })
-            .collect();
-        // 値降順・同点は position 昇順（決定的）。
-        by_attr.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        positions.extend(
-            by_attr
-                .into_iter()
-                .take(SEED_TOP_PER_REQUIRED_ATTR)
-                .map(|(p, _)| p),
-        );
+        positions.extend(top_positions_for_attr(
+            prepared,
+            attr_idx,
+            SEED_TOP_PER_REQUIRED_ATTR,
+        ));
     }
 
     positions.into_iter().collect()
+}
+
+/// 目標属性1つぶんの個別シード部分集合: 「w(m)降順上位 [`SEED_SELECTED_ATTR_TOP_BY_WEIGHT`]件」
+/// ∪「その属性自身の値降順上位 [`SEED_SELECTED_ATTR_TOP_FOR_ATTR`]件」∪「requirements属性
+/// ごとの値上位 [`SEED_TOP_PER_REQUIRED_ATTR`]件」（[`build_seed_positions`]と同じ理由:
+/// requirements が厳しいとこの部分集合が要求を満たす解を1件も含められず、寄与ゼロになる
+/// ことがある。正当性には無害だが閾値の質が落ちるため、requirementsカバレッジも足しておく）。
+/// [`build_seed_ranked`] が目標属性ごとに呼び、得られた実解を和集合でマージする。
+fn build_selected_attr_seed_positions(prepared: &Prepared, attr_idx: usize) -> Vec<usize> {
+    let n = prepared.cands.len();
+    let mut positions: std::collections::BTreeSet<usize> =
+        (0..n.min(SEED_SELECTED_ATTR_TOP_BY_WEIGHT)).collect();
+    positions.extend(top_positions_for_attr(
+        prepared,
+        attr_idx,
+        SEED_SELECTED_ATTR_TOP_FOR_ATTR,
+    ));
+    for &(req_attr_idx, _) in &prepared.required_idxs {
+        positions.extend(top_positions_for_attr(
+            prepared,
+            req_attr_idx,
+            SEED_TOP_PER_REQUIRED_ATTR,
+        ));
+    }
+    positions.into_iter().collect()
+}
+
+/// 混合シード部分集合: 「w(m)降順上位 [`SEED_MIXED_SELECTED_TOP_BY_WEIGHT`]件」∪「目標属性
+/// それぞれの値降順上位 [`SEED_MIXED_SELECTED_TOP_PER_ATTR`]件（全属性ぶんまとめて1つの
+/// 部分集合へ）」∪「requirements属性ごとの上位（[`build_selected_attr_seed_positions`]と
+/// 同じ理由）」。[`build_selected_attr_seed_positions`]（目標属性を1つずつ個別に扱う）だけ
+/// では表現できない「複数の目標属性を同時に含む解」をこの1本でカバーする
+/// （[`SEED_MIXED_SELECTED_TOP_BY_WEIGHT`] のdoc参照）。
+fn build_mixed_selected_attrs_seed_positions(
+    prepared: &Prepared,
+    selected_attr_idxs: &[usize],
+) -> Vec<usize> {
+    let n = prepared.cands.len();
+    let mut positions: std::collections::BTreeSet<usize> =
+        (0..n.min(SEED_MIXED_SELECTED_TOP_BY_WEIGHT)).collect();
+    for &attr_idx in selected_attr_idxs {
+        positions.extend(top_positions_for_attr(
+            prepared,
+            attr_idx,
+            SEED_MIXED_SELECTED_TOP_PER_ATTR,
+        ));
+    }
+    for &(req_attr_idx, _) in &prepared.required_idxs {
+        positions.extend(top_positions_for_attr(
+            prepared,
+            req_attr_idx,
+            SEED_TOP_PER_REQUIRED_ATTR,
+        ));
+    }
+    positions.into_iter().collect()
+}
+
+/// 複数の Ranked リスト（基本シード＋目標属性ごとの個別シードなど、異なる部分集合から得た
+/// 厳密解）を重複除去しつつ1つの top_k へ統合し、goodness 降順（キー降順→combo昇順）に
+/// ソートした `Vec<Ranked>` を返す（[`search_cpu`](optimizer::search_cpu) の返り値と同じ形。
+/// 呼び出し元は `len()`/`[top_k-1].key` をそのまま既存コードと同様に使える）。
+///
+/// 重複除去が必須の理由（admissible性の前提、[`merge_topk_for_refinement`]と同じ論法）:
+/// 同じ実解が複数の部分集合シードから重複して見つかった場合（例: ある目標属性の個別シードと
+/// 基本シードの両方に含まれる候補で構成される解）、重複をそのまま「distinct k件」の一部として
+/// 数えると、真により多くのdistinct実解が必要なところを少ない実解で「k位に到達した」と
+/// 誤認しうる（真の全体k位キーより締まりすぎた閾値＝取りこぼしのリスク）。ここでは全リストを
+/// 通じてcomboの出現を追跡し、初出のみ投入することで実質的に distinct(∪ lists) の top_k を
+/// 計算する。
+fn merge_seed_ranked_lists(lists: Vec<Vec<Ranked>>, top_k: usize) -> Vec<Ranked> {
+    let mut seen: HashSet<Vec<u32>> = HashSet::new();
+    let mut topk = TopK::new(top_k);
+    for list in lists {
+        for r in list {
+            if seen.insert(r.combo.clone()) {
+                topk.offer(r.key, &r.combo);
+            }
+        }
+    }
+    let mut merged = topk.into_vec();
+    merged.sort_by(|a, b| b.cmp(a));
+    merged
+}
+
+/// CPUシード全体（[`run_gpu_search_chunked`]/[`run_gpu_search`]が閾値算出に使う暫定top-k）:
+/// 基本シード（[`build_seed_positions`]、w(m)上位∪requirements属性ごとの上位）に加え、
+/// `selected_mask` が立っている属性（目標属性）ごとに個別の小さい部分集合
+/// （[`build_selected_attr_seed_positions`]）で**別々に**厳密探索し、目標属性が2個以上ある
+/// 場合はさらに混合シード（[`build_mixed_selected_attrs_seed_positions`]、複数目標属性を
+/// 同時に含む解をカバーする）も加えて、得られた実解の和集合（[`merge_seed_ranked_lists`]）
+/// から top_k 件を返す。
+///
+/// 個別に探索する理由（1つの大きい部分集合へ混ぜない理由）: 目標属性ごとに単純に上位N件を
+/// 同じ部分集合へ追加すると |S| が目標属性数に比例して増え、DFSコストが C(|S|,slot_count) で
+/// 組合せ爆発する（[`SEED_SELECTED_ATTR_TOP_BY_WEIGHT`] のdoc参照）。個別の小さい部分集合で
+/// 探索してから実解の和集合を取る方式なら、各探索のコストは独立に小さく保たれ、目標属性数に
+/// 対して概ね線形になる（本関数が実測ログ `[gpu-seed]` を出すので、実際に線形に収まっているか
+/// はログで確認できる）。混合シードは目標属性数によらず1本だけ追加するため、この線形性を
+/// 壊さない。
+///
+/// 正当性: 各個別探索は「全候補空間の部分集合」からの厳密解であり、それらの和集合（重複除去
+/// 済み）の top_k の k位キーは、全候補空間の真の k位キー以下（単調性）。[`build_seed_positions`]
+/// 単独のときと同じ admissible 性がそのまま拡張される（リストを1本増やすだけなので不変）。
+fn build_seed_ranked(
+    prepared: &Prepared,
+    top_k: usize,
+    slot_count: usize,
+    mode: RankMode,
+) -> Vec<Ranked> {
+    let seed_start = std::time::Instant::now();
+
+    let base_positions = build_seed_positions(prepared);
+    let base_len = base_positions.len();
+    let base_ranked = optimizer::search_cpu(
+        &prepared.subset(&base_positions),
+        top_k,
+        slot_count,
+        mode,
+        true,
+        true,
+    );
+
+    let selected_attr_idxs: Vec<usize> = (0..prepared.n_attr)
+        .filter(|&a| prepared.selected_mask[a])
+        .collect();
+
+    let mut per_attr_sizes: Vec<usize> = Vec::with_capacity(selected_attr_idxs.len());
+    let mut lists: Vec<Vec<Ranked>> = Vec::with_capacity(2 + selected_attr_idxs.len());
+    lists.push(base_ranked);
+    for &attr_idx in &selected_attr_idxs {
+        let positions = build_selected_attr_seed_positions(prepared, attr_idx);
+        per_attr_sizes.push(positions.len());
+        lists.push(optimizer::search_cpu(
+            &prepared.subset(&positions),
+            top_k,
+            slot_count,
+            mode,
+            true,
+            true,
+        ));
+    }
+
+    // 目標属性が2個以上のときだけ混合シードを足す（0個は対象が無く、1個は個別シードと
+    // カバレッジが同じで冗長なため）。
+    let mixed_len = if selected_attr_idxs.len() >= 2 {
+        let positions = build_mixed_selected_attrs_seed_positions(prepared, &selected_attr_idxs);
+        let len = positions.len();
+        lists.push(optimizer::search_cpu(
+            &prepared.subset(&positions),
+            top_k,
+            slot_count,
+            mode,
+            true,
+            true,
+        ));
+        Some(len)
+    } else {
+        None
+    };
+
+    let merged = merge_seed_ranked_lists(lists, top_k);
+    log::info!(
+        "[gpu-seed] n={} slot={slot_count} top_k={top_k} mode={mode:?} base_positions={base_len} \
+         selected_attrs={} per_attr_positions={per_attr_sizes:?} mixed_positions={mixed_len:?} \
+         merged_len={} elapsed={:?}",
+        prepared.cands.len(),
+        selected_attr_idxs.len(),
+        merged.len(),
+        seed_start.elapsed()
+    );
+    merged
 }
 
 /// プレフィックス単位枝刈り（Phase B）用の suffix 最大値（r=1）テーブルを構築し、
@@ -797,6 +1042,33 @@ fn read_combos(
         .collect())
 }
 
+/// [`recompute_combo`] から index 妥当性チェックを除いた本体。呼び出し元が別途
+/// `si < prepared.cands.len()` を保証していることが前提（[`refine_threshold_on_overflow`]
+/// が、まとめて事前検証してから使う用途で切り出した）。
+fn recompute_combo_unchecked(
+    prepared: &Prepared,
+    slot_count: usize,
+    raw: &[u32],
+    mode: RankMode,
+) -> (Key, Vec<u32>) {
+    let sorted_indices = &raw[..slot_count];
+    let mut acc = Accum::new(prepared.n_attr);
+    for &si in sorted_indices {
+        acc.add(
+            &prepared.cands[si as usize],
+            &prepared.selected_mask,
+            &prepared.soft_excl_mask,
+        );
+    }
+    let key = acc.key(mode);
+    let mut combo: Vec<u32> = sorted_indices
+        .iter()
+        .map(|&si| prepared.order[si as usize] as u32)
+        .collect();
+    combo.sort_unstable();
+    (key, combo)
+}
+
 /// out_combos の生データ（1件=5要素のu32配列、先頭slot_count個が探索順indexの有効値、
 /// 残りはNO_PARTパディング）を CPU 側 [`Accum`] で厳密再計算する（GPU 側の結果は一切
 /// 信用しない）。combo は元index昇順にソート済みで返す。チャンク0の閾値リファインメント
@@ -812,21 +1084,7 @@ fn recompute_combo(
     if sorted_indices.iter().any(|&si| si as usize >= n) {
         return Err("GPU出力comboのインデックスが探索範囲外です（実行時異常）".to_string());
     }
-    let mut acc = Accum::new(prepared.n_attr);
-    for &si in sorted_indices {
-        acc.add(
-            &prepared.cands[si as usize],
-            &prepared.selected_mask,
-            &prepared.soft_excl_mask,
-        );
-    }
-    let key = acc.key(mode);
-    let mut combo: Vec<u32> = sorted_indices
-        .iter()
-        .map(|&si| prepared.order[si as usize] as u32)
-        .collect();
-    combo.sort_unstable();
-    Ok((key, combo))
+    Ok(recompute_combo_unchecked(prepared, slot_count, raw, mode))
 }
 
 /// 閾値リファインメント（[`run_gpu_search_chunked`]）用: シード top-k と追加combo群を
@@ -853,8 +1111,7 @@ fn merge_topk_for_refinement(
     extra: impl IntoIterator<Item = (Key, Vec<u32>)>,
     top_k: usize,
 ) -> Option<Key> {
-    let seed_combo_set: HashSet<&[u32]> =
-        seed_ranked.iter().map(|r| r.combo.as_slice()).collect();
+    let seed_combo_set: HashSet<&[u32]> = seed_ranked.iter().map(|r| r.combo.as_slice()).collect();
     let mut topk = TopK::new(top_k);
     for r in seed_ranked {
         topk.offer(r.key, &r.combo);
@@ -866,6 +1123,91 @@ fn merge_topk_for_refinement(
         topk.offer(key, &combo);
     }
     topk.worst_key()
+}
+
+/// [`run_gpu_search_chunked`]の中核ロジック（通常のチャンク0リファインメントと、オーバー
+/// フロー安全網の両方から使う共通関数）: `extra`（部分出力の実解）と `seed_ranked` の和集合
+/// から締め直した閾値を求め、`current` より真に締まっている場合のみ `Some` を返す。
+/// `current` と同じか緩い（＝これ以上締まらない、または後退する）なら `None` を返す。
+///
+/// **`current.max(refined)` を取る理由（W-1 の教訓）**: `refined` は「今回渡された `extra`
+/// だけ」から計算される値であり、`current` がどれだけの証拠（どの範囲のチャンクを走査した
+/// 結果）から締められたかを一切知らない。呼び出し元がリトライを跨いで `current` を引き継ぐ
+/// 構成（[`run_gpu_search_chunked`]）では、2回目以降の `current` は「前回試行の out_buf
+/// 全チャンク由来」で締まっているのに対し、今回の `extra` は「今回試行の先頭 REFINE_CHUNKS
+/// 個だけ」など、より狭い範囲からの証拠でしかないことがある。この場合 `refined < current`
+/// になりえ、単純に上書きすると閾値が緩む方向へ後退してしまう（両者とも admissible なので
+/// 正当性は保たれるが、安全網の意味が薄れる。目標属性の担い手が w(m) 降順の後方に偏る
+/// データ——本モジュールの根本原因そのもの——では特に起こりやすい）。`current`/`refined`
+/// はどちらも「全候補空間の部分集合からの厳密解」に基づく admissible な下界なので、
+/// 大きい方（`max`）を採用しても admissible 性は保たれる。
+///
+/// [`merge_topk_for_refinement`] をそのまま再利用する（admissible性の根拠も同じ）。GPU I/O
+/// を含まない純粋関数のため、実GPU無しで単体テストできる（`next_retry_threshold_*` テスト
+/// 参照）。
+fn next_retry_threshold(
+    seed_ranked: &[Ranked],
+    extra: impl IntoIterator<Item = (Key, Vec<u32>)>,
+    top_k: usize,
+    mode: RankMode,
+    current: (u32, u32),
+) -> Option<(u32, u32)> {
+    let refined_key = merge_topk_for_refinement(seed_ranked, extra, top_k)?;
+    let refined = current.max(pack_key(&refined_key, mode));
+    if refined == current {
+        None
+    } else {
+        Some(refined)
+    }
+}
+
+/// オーバーフロー発生時、あふれる直前の部分出力（`out_buf[0..CAPACITY]`）を読み戻して
+/// [`next_retry_threshold`] へ渡す（[`run_gpu_search_chunked`] の「安全網」節、
+/// 「やり直しは健全、再開は不健全」参照）。
+///
+/// `out_buf[0..CAPACITY]` が常に有効である理由: シェーダ側は `out_idx < CAPACITY` の
+/// ときのみ書く（`optimize_chunked.wgsl` 参照）ため、CAPACITY を超えて accept された分は
+/// 書き込まれずカウンタだけが増える。したがってあふれていても `out_buf[0..CAPACITY]` は
+/// 常に CAPACITY 件ぶんの有効・重複無しの実解であり、[`merge_topk_for_refinement`] の
+/// 「`extra` 自体に重複が無いこと」という前提も満たす（複数チャンクをまとめて読んでいるが、
+/// チャンク間のプレフィックス範囲は排他的なため重複しない、という既存の前提がそのまま適用
+/// できる）。
+///
+/// メモリ: `extra` を `Vec<(Key, Vec<u32>)>` へ丸ごと実体化すると、実測1件あたり約100B ×
+/// CAPACITY(2,097,152) ≈ 210MiB のピークメモリを追加で消費する（`combos`/staging の各40MiB
+/// とは別に、しかも本経路はオーバーフロー時に毎回発生しうる）。[`merge_topk_for_refinement`]
+/// の `extra` パラメータは `impl IntoIterator` のため、index 妥当性だけ先に一括検証してから
+/// [`recompute_combo_unchecked`] を遅延評価する `Map` イテレータをそのまま渡し、
+/// `TopK::offer` に消費された combo は都度破棄されるようにする（保持されるのは top_k 件のみ）。
+#[allow(clippy::too_many_arguments)]
+fn refine_threshold_on_overflow(
+    ctx: &GpuContext,
+    prepared: &Prepared,
+    slot_count: usize,
+    mode: RankMode,
+    seed_ranked: &[Ranked],
+    out_buf: &wgpu::Buffer,
+    top_k: usize,
+    current_threshold: (u32, u32),
+) -> Result<Option<(u32, u32)>, String> {
+    let combos = read_combos(&ctx.device, &ctx.queue, out_buf, CAPACITY as usize)?;
+    let n = prepared.cands.len();
+    if combos
+        .chunks_exact(5)
+        .any(|raw| raw[..slot_count].iter().any(|&si| si as usize >= n))
+    {
+        return Err("GPU出力comboのインデックスが探索範囲外です（実行時異常）".to_string());
+    }
+    let extra = combos
+        .chunks_exact(5)
+        .map(|raw| recompute_combo_unchecked(prepared, slot_count, raw, mode));
+    Ok(next_retry_threshold(
+        seed_ranked,
+        extra,
+        top_k,
+        mode,
+        current_threshold,
+    ))
 }
 
 /// 1チャンク分の Kernel P→I→T を1つの encoder+submit にまとめて投げる（submit するだけで
@@ -968,6 +1310,24 @@ fn dispatch_one_chunk(
 /// チャンク群の実結果はリファインメント計算専用の一時 TopK にのみ投入し、最終結果用の
 /// `topk` へは投入しない（最終読み戻しが全チャンク分の out_combos を一括処理する際に
 /// 自然に含まれるため、ここで投入すると二重計上になる）。
+///
+/// **安全網（オーバーフロー時のリトライ）**: append バッファがあふれても（counter>CAPACITY）
+/// 即座に CPU フォールバックはしない。あふれる直前の部分出力（`out_buf[0..CAPACITY]`、
+/// シェーダの `out_idx < CAPACITY` ガードにより常に有効・重複無しの実解）と CPU シードの
+/// 和集合から閾値を締め直し（[`refine_threshold_on_overflow`]）、**全プレフィックス空間を
+/// counters リセットから最初からやり直す**リトライを最大 [`GPU_OVERFLOW_RETRY_LIMIT`] 回
+/// 試みる。締め直した閾値が直前と変わらない（＝これ以上締まらない）、またはリトライ上限に
+/// 達したら、そのまま CPU フォールバックへ回す（従来どおり `Err` を返す）。
+///
+/// 健全性（「やり直しは健全、再開は不健全」）: 「やり直し」＝毎回0番から全プレフィックス
+/// 空間を通しで再実行することは健全。1回の試行内では閾値・対象プレフィックス空間はどちらも
+/// 固定されており、accept 判定はプレフィックス／候補データのみに依存する（atomicAdd の
+/// 到達順が試行ごとに変わっても最終的にappendされる集合は同じ）。対して「再開」＝前回の
+/// 部分出力を保持したまま続きのプレフィックスだけ処理する方式は不健全（前回どこまで
+/// 処理済みだったかは到達順という非決定的な情報に依存するため、二重計上や欠落を構造的に
+/// 排除できない）。本関数はリトライのたびに counters を0リセットしチャンク0から通しで
+/// 実行するため「やり直し」に該当し、admissible性（真のk位キー以下の閾値でaccept判定を
+/// 行う限り取りこぼしが起きない）はリトライを挟んでも保たれる。
 fn run_gpu_search_chunked(
     ctx: &GpuContext,
     prepared: &Prepared,
@@ -979,10 +1339,8 @@ fn run_gpu_search_chunked(
     let n = prepared.cands.len();
     let total_combinations = optimizer::n_choose_k(n, slot_count);
 
-    // シード（CPU）: run_gpu_search と同じロジックで閾値を得る。
-    let seed_positions = build_seed_positions(prepared);
-    let seed_prepared = prepared.subset(&seed_positions);
-    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, mode, true, true);
+    // シード（CPU）: run_gpu_search と同じロジックで閾値を得る（[`build_seed_ranked`] 参照）。
+    let seed_ranked = build_seed_ranked(prepared, top_k, slot_count, mode);
 
     let mut threshold: (u32, u32) = if seed_ranked.len() >= top_k {
         pack_key(&seed_ranked[top_k - 1].key, mode)
@@ -1167,161 +1525,248 @@ fn run_gpu_search_chunked(
         ],
     });
 
-    // counters[0..2)（appended・survivor_total）は全チャンク累積のため最初の1回だけ0初期化。
-    ctx.queue.write_buffer(&counters_buf, 0, &[0u8; 8]);
-
     let dispatch_start = std::time::Instant::now();
     let num_chunks = prefix_count.div_ceil(CHUNK_SIZE).max(1);
-
-    // --- 先頭 REFINE_CHUNKS 個: まとめて submit してから1回だけ poll し、閾値
-    //     リファインメントを行う（詳細は関数docの「中間閾値リファインメント」節・
-    //     正当性節を参照）。---
     let num_refine_chunks = REFINE_CHUNKS.min(num_chunks);
-    for chunk_idx in 0..num_refine_chunks {
-        let chunk_start = chunk_idx * CHUNK_SIZE;
-        let chunk_count = (prefix_count - chunk_start).min(CHUNK_SIZE);
-        if chunk_count == 0 {
-            break;
-        }
-        let params_bytes = build_params_chunked_bytes(
-            n as u32,
-            slot_count as u32,
-            prepared.n_attr as u32,
-            table_cols,
-            selected_mask_bits,
-            soft_excl_mask_bits,
-            req_count,
-            threshold.0,
-            threshold.1,
-            chunk_start,
-            chunk_count,
-            rank_mode_u32(mode),
-        );
-        dispatch_one_chunk(
-            ctx,
-            &p_bind_group,
-            &i_bind_group,
-            &t_bind_group,
-            &indirect_args_buf,
-            &counters_buf,
-            &params_buf,
-            &params_bytes,
-            chunk_count,
-        );
-    }
-    {
-        ctx.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| format!("device.poll失敗（閾値リファインメント同期）: {e}"))?;
 
-        let appended0 = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 0)?;
-        if appended0 > CAPACITY {
-            return Err(format!(
-                "appendバッファがオーバーフローしました(counter={appended0}, capacity={CAPACITY})"
-            ));
-        }
-        // 健全性ガード（低確率だが既存の atomicAdd 実装は理論上ありうる）: counters[0] は
-        // u32 のため、accept 数が u32::MAX 近くに達するとラップアラウンドし、上の
-        // `appended0 > CAPACITY` 比較を偽陰性ですり抜けうる（ラップ後の値がたまたま
-        // CAPACITY 以下に着地するケース）。accept 数は全組み合わせ数 `total_combinations`
-        // を物理的に超えられないため、ここでの矛盾はラップアラウンドの動かぬ証拠になる
-        // （逆に矛盾が無いことはラップアラウンドが起きていない証明にはならない点に注意。
-        // 完全な検知ではなく、明らかな異常を捉えるための追加ガード）。
-        if u64::from(appended0) > total_combinations {
-            return Err(format!(
-                "appendedカウンタが理論上限を超えています(appended0={appended0}, \
-                 total_combinations={total_combinations})。u32カウンタの桁溢れの可能性があります"
-            ));
-        }
-        if appended0 > 0 {
-            let combos0 = read_combos(&ctx.device, &ctx.queue, &out_buf, appended0 as usize)?;
-            // シードtop-k と 先頭チャンク群の厳密再計算済み実結果を、重複除去しつつ
-            // 一時TopKへマージする（最終結果用の topk へは投入しない。二重計上を避けるため
-            // — 全チャンク投入後の最終読み戻しが先頭チャンク分も含めて自然にカバーする）。
-            // 重複除去の理由は [`merge_topk_for_refinement`] のdoc参照（admissible性の前提）。
-            let mut extra = Vec::with_capacity(appended0 as usize);
-            for raw in combos0.chunks_exact(5) {
-                extra.push(recompute_combo(prepared, slot_count, raw, mode)?);
+    // --- フルディスパッチ試行ループ（安全網: オーバーフロー時のリトライ） ---
+    // 1回の「試行」= counters を0リセット→先頭 REFINE_CHUNKS 個（リファインメント）→
+    // 残りチャンク、をプレフィックス0から通し実行する。あふれたら「部分出力
+    // （out_buf[0..CAPACITY]、有効な実解）と seed_ranked の和集合から閾値を締め直し、
+    // フル再実行する」を最大 [`GPU_OVERFLOW_RETRY_LIMIT`] 回繰り返す
+    // （[`refine_threshold_on_overflow`]）。締め直しても閾値が変わらない、またはリトライ
+    // 上限に達したら、そのままCPUフォールバックへ回す（従来どおり `Err` を返す）。
+    //
+    // 健全性（「やり直しは健全、再開は不健全」）: 「やり直し」＝全プレフィックス空間を
+    // 毎回0番から通しで再実行することは健全。閾値と対象プレフィックス空間はどちらも
+    // 試行内で固定されているため、atomicAdd の到達順（`counters`書き込みの実行順序）が
+    // 試行のたびに変わっても、最終的に「閾値以上のキーを持つ全comboをappendし終える」という
+    // 到達点は変わらない（accept 判定はプレフィックス/candidateデータのみに依存し、
+    // 到達順に依存しない）。対して「再開」＝前回あふれた分の部分出力だけを保持したまま
+    // 続きのプレフィックスから処理を継続することは不健全（前回どのプレフィックスが
+    // 処理済みだったか自体が到達順に依存する非決定的な情報のため、二重計上や欠落を
+    // 構造的に排除できない）。本ループは毎回 counters を0リセットしチャンク0から通しで
+    // 実行するため「やり直し」に該当し、健全性が保たれる。
+    let mut attempt: u32 = 0;
+    let (appended, survivor_total) = 'attempt: loop {
+        // 各試行の最初でカウンタをリセット（前回試行の結果を一切引き継がない＝「再開」しない）。
+        ctx.queue.write_buffer(&counters_buf, 0, &[0u8; 8]);
+
+        // --- 先頭 REFINE_CHUNKS 個: まとめて submit してから1回だけ poll し、閾値
+        //     リファインメントを行う（詳細は関数docの「中間閾値リファインメント」節・
+        //     正当性節を参照）。---
+        for chunk_idx in 0..num_refine_chunks {
+            let chunk_start = chunk_idx * CHUNK_SIZE;
+            let chunk_count = (prefix_count - chunk_start).min(CHUNK_SIZE);
+            if chunk_count == 0 {
+                break;
             }
-            if let Some(worst_key) = merge_topk_for_refinement(&seed_ranked, extra, top_k) {
-                let refined = pack_key(&worst_key, mode);
-                // 「ログに出すか」だけの条件分岐であり、`threshold` への代入は常に無条件で
-                // 行う（refined が old と同値でも、明示的に再代入して以降のロジックが
-                // 常に最新のリファインメント結果を参照するようにする。ログを出す/出さないは
-                // 表示上の最適化に過ぎず、正当性には無関係）。
-                if refined != threshold {
+            let params_bytes = build_params_chunked_bytes(
+                n as u32,
+                slot_count as u32,
+                prepared.n_attr as u32,
+                table_cols,
+                selected_mask_bits,
+                soft_excl_mask_bits,
+                req_count,
+                threshold.0,
+                threshold.1,
+                chunk_start,
+                chunk_count,
+                rank_mode_u32(mode),
+            );
+            dispatch_one_chunk(
+                ctx,
+                &p_bind_group,
+                &i_bind_group,
+                &t_bind_group,
+                &indirect_args_buf,
+                &counters_buf,
+                &params_buf,
+                &params_bytes,
+                chunk_count,
+            );
+        }
+        {
+            ctx.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|e| format!("device.poll失敗（閾値リファインメント同期）: {e}"))?;
+
+            let appended0 = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 0)?;
+            // 健全性ガード（低確率だが既存の atomicAdd 実装は理論上ありうる）: counters[0] は
+            // u32 のため、accept 数が u32::MAX 近くに達するとラップアラウンドし、下の
+            // `appended0 > CAPACITY` 比較を偽陰性ですり抜けうる（ラップ後の値がたまたま
+            // CAPACITY 以下に着地するケース）。accept 数は全組み合わせ数 `total_combinations`
+            // を物理的に超えられないため、ここでの矛盾はラップアラウンドの動かぬ証拠になる
+            // （逆に矛盾が無いことはラップアラウンドが起きていない証明にはならない点に注意。
+            // 完全な検知ではなく、明らかな異常を捉えるための追加ガード）。ラップアラウンドは
+            // カウンタの信頼性そのものが崩れている異常事態のため、閾値を締め直しても意味が
+            // なく、リトライはせず即エラーにする。**このチェックは `> CAPACITY` 分岐より
+            // 必ず前に置くこと**: 後ろに置くと overflow 分岐が必ず continue/return で
+            // 抜けるためこのチェックが一度も評価されず、ラップアラウンドした（＝同一
+            // out_idx に複数スレッドが書いた、実在しない）combo から閾値を締め直す経路が
+            // 生き残ってしまう（過剰に締まった閾値＝無言の取りこぼしという最も見つけにくい
+            // 形の不具合になる）。
+            if u64::from(appended0) > total_combinations {
+                return Err(format!(
+                    "appendedカウンタが理論上限を超えています(appended0={appended0}, \
+                     total_combinations={total_combinations})。u32カウンタの桁溢れの可能性があります"
+                ));
+            }
+            if appended0 > CAPACITY {
+                match refine_threshold_on_overflow(
+                    ctx,
+                    prepared,
+                    slot_count,
+                    mode,
+                    &seed_ranked,
+                    &out_buf,
+                    top_k,
+                    threshold,
+                )? {
+                    Some(next) if attempt < GPU_OVERFLOW_RETRY_LIMIT => {
+                        attempt += 1;
+                        log::warn!(
+                            "[gpu-chunked] n={n} slot={slot_count} top_k={top_k} \
+                             オーバーフロー(refine_chunks段, appended0={appended0}, \
+                             capacity={CAPACITY})のため閾値を締め直してリトライします \
+                             (attempt={attempt}/{GPU_OVERFLOW_RETRY_LIMIT}, \
+                             threshold={threshold:?}→{next:?})"
+                        );
+                        threshold = next;
+                        continue 'attempt;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "appendバッファがオーバーフローしました(counter={appended0}, \
+                             capacity={CAPACITY}, attempts={attempt})"
+                        ));
+                    }
+                }
+            }
+            if appended0 > 0 {
+                let combos0 = read_combos(&ctx.device, &ctx.queue, &out_buf, appended0 as usize)?;
+                // シードtop-k と 先頭チャンク群の厳密再計算済み実結果を、重複除去しつつ
+                // 一時TopKへマージする（最終結果用の topk へは投入しない。二重計上を避けるため
+                // — 全チャンク投入後の最終読み戻しが先頭チャンク分も含めて自然にカバーする）。
+                // 重複除去の理由は [`merge_topk_for_refinement`] のdoc参照（admissible性の前提）。
+                let mut extra = Vec::with_capacity(appended0 as usize);
+                for raw in combos0.chunks_exact(5) {
+                    extra.push(recompute_combo(prepared, slot_count, raw, mode)?);
+                }
+                // `next_retry_threshold` は `threshold` より真に締まっている場合のみ
+                // `Some` を返す（`current.max(refined)`、W-1参照）。初回試行
+                // （attempt==0）なら `threshold` は必ずシード由来で「先頭チャンク群を
+                // 含む全候補空間」の部分集合なので通常は素直に締まるが、**リトライ
+                // （attempt>=1）では**この時点の `threshold` が「前回試行の out_buf 全
+                // チャンク由来」で締まっている一方、ここで渡す `extra` は「今回試行の
+                // 先頭 REFINE_CHUNKS 個だけ」というより狭い証拠でしかなく、単純比較なし
+                // に上書きすると閾値が緩む方向へ後退しうる。`next_retry_threshold` が
+                // その後退を防ぐ。
+                if let Some(next_threshold) =
+                    next_retry_threshold(&seed_ranked, extra, top_k, mode, threshold)
+                {
                     log::info!(
                         "[gpu-chunked] n={n} slot={slot_count} top_k={top_k} 閾値リファインメント \
                          refine_chunks={num_refine_chunks} appended0={appended0} \
-                         old={threshold:?} new={refined:?}"
+                         old={threshold:?} new={next_threshold:?}"
                     );
+                    threshold = next_threshold;
                 }
-                threshold = refined;
             }
         }
-    }
 
-    // --- 残りチャンク: リファインメント後の閾値で、従来どおりまとめて submit する
-    //     （追加の同期なし）。---
-    for chunk_idx in num_refine_chunks..num_chunks {
-        let chunk_start = chunk_idx * CHUNK_SIZE;
-        let chunk_count = (prefix_count - chunk_start).min(CHUNK_SIZE);
-        if chunk_count == 0 {
-            break;
+        // --- 残りチャンク: リファインメント後の閾値で、従来どおりまとめて submit する
+        //     （追加の同期なし）。---
+        for chunk_idx in num_refine_chunks..num_chunks {
+            let chunk_start = chunk_idx * CHUNK_SIZE;
+            let chunk_count = (prefix_count - chunk_start).min(CHUNK_SIZE);
+            if chunk_count == 0 {
+                break;
+            }
+            let params_bytes = build_params_chunked_bytes(
+                n as u32,
+                slot_count as u32,
+                prepared.n_attr as u32,
+                table_cols,
+                selected_mask_bits,
+                soft_excl_mask_bits,
+                req_count,
+                threshold.0,
+                threshold.1,
+                chunk_start,
+                chunk_count,
+                rank_mode_u32(mode),
+            );
+            dispatch_one_chunk(
+                ctx,
+                &p_bind_group,
+                &i_bind_group,
+                &t_bind_group,
+                &indirect_args_buf,
+                &counters_buf,
+                &params_buf,
+                &params_bytes,
+                chunk_count,
+            );
         }
-        let params_bytes = build_params_chunked_bytes(
-            n as u32,
-            slot_count as u32,
-            prepared.n_attr as u32,
-            table_cols,
-            selected_mask_bits,
-            soft_excl_mask_bits,
-            req_count,
-            threshold.0,
-            threshold.1,
-            chunk_start,
-            chunk_count,
-            rank_mode_u32(mode),
-        );
-        dispatch_one_chunk(
-            ctx,
-            &p_bind_group,
-            &i_bind_group,
-            &t_bind_group,
-            &indirect_args_buf,
-            &counters_buf,
-            &params_buf,
-            &params_bytes,
-            chunk_count,
-        );
-    }
 
-    // 全チャンク投入後、一度だけ読み戻す（チャンク間のCPU-GPU同期は発生させない）。
-    // チャンク0の実結果もここで（再度）読み戻して厳密再計算するが、上のリファインメント
-    // 計算は結果を専用の一時TopKにのみ投入しており最終結果用topkには一切触れていないため
-    // 二重計上は起きない。
-    let appended = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 0)?;
-    let survivor_total = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 4)?;
+        // 全チャンク投入後、一度だけ読み戻す（チャンク間のCPU-GPU同期は発生させない）。
+        // チャンク0の実結果もここで（再度）読み戻して厳密再計算するが、上のリファインメント
+        // 計算は結果を専用の一時TopKにのみ投入しており最終結果用topkには一切触れていないため
+        // 二重計上は起きない。
+        let appended = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 0)?;
+        let survivor_total = read_u32_at(&ctx.device, &ctx.queue, &counters_buf, 4)?;
+
+        // オーバーフロー（appended > 容量）: 「安全網」節のとおり、部分出力から閾値を
+        // 締め直して**フル再実行**するのは健全（このループの「やり直し」に該当。前回の
+        // 部分出力を保持したまま続けるような「再開」ではない）。
+        if appended > CAPACITY {
+            match refine_threshold_on_overflow(
+                ctx,
+                prepared,
+                slot_count,
+                mode,
+                &seed_ranked,
+                &out_buf,
+                top_k,
+                threshold,
+            )? {
+                Some(next) if attempt < GPU_OVERFLOW_RETRY_LIMIT => {
+                    attempt += 1;
+                    log::warn!(
+                        "[gpu-chunked] n={n} slot={slot_count} top_k={top_k} \
+                         オーバーフロー(appended={appended}, capacity={CAPACITY})のため \
+                         閾値を締め直してリトライします \
+                         (attempt={attempt}/{GPU_OVERFLOW_RETRY_LIMIT}, \
+                         threshold={threshold:?}→{next:?})"
+                    );
+                    threshold = next;
+                    continue 'attempt;
+                }
+                _ => {
+                    return Err(format!(
+                        "appendバッファがオーバーフローしました(counter={appended}, \
+                         capacity={CAPACITY}, attempts={attempt})"
+                    ));
+                }
+            }
+        }
+        // 健全性ガード（W-1相当）: 全チャンク累積の appended は u32 桁溢れの主要な発生源
+        // （n=300・slot=5では全組み合わせ数が u32::MAX の約4.5倍に達する）。ラップアラウンド後の
+        // 値が `CAPACITY` 以下に着地すると上のガードをすり抜けるため、accept 数が物理的に
+        // 超えられない `total_combinations` との整合を追加でチェックする（ラップアラウンドは
+        // カウンタの信頼性そのものが崩れている異常事態のため、リトライはせず即エラーにする）。
+        if u64::from(appended) > total_combinations {
+            return Err(format!(
+                "appendedカウンタが理論上限を超えています(appended={appended}, \
+                 total_combinations={total_combinations})。u32カウンタの桁溢れの可能性があります"
+            ));
+        }
+
+        break 'attempt (appended, survivor_total);
+    };
     let gpu_elapsed = dispatch_start.elapsed();
-
-    // オーバーフロー（appended > 容量）はそのままCPUフォールバックへ回す（run_gpu_search と
-    // 同じ理由: atomicAdd の到達順は実行のたびに変わりうる任意サブセットのため、部分出力
-    // から閾値を引き締めて再試行するのは不健全）。
-    if appended > CAPACITY {
-        return Err(format!(
-            "appendバッファがオーバーフローしました(counter={appended}, capacity={CAPACITY})"
-        ));
-    }
-    // 健全性ガード（W-1相当）: 全チャンク累積の appended は u32 桁溢れの主要な発生源
-    // （n=300・slot=5では全組み合わせ数が u32::MAX の約4.5倍に達する）。ラップアラウンド後の
-    // 値が `CAPACITY` 以下に着地すると上のガードをすり抜けるため、accept 数が物理的に
-    // 超えられない `total_combinations` との整合を追加でチェックする。
-    if u64::from(appended) > total_combinations {
-        return Err(format!(
-            "appendedカウンタが理論上限を超えています(appended={appended}, \
-             total_combinations={total_combinations})。u32カウンタの桁溢れの可能性があります"
-        ));
-    }
 
     let mut topk = TopK::new(top_k);
     if appended > 0 {
@@ -1344,8 +1789,10 @@ fn run_gpu_search_chunked(
     log::info!(
         "[gpu-chunked] n={n} slot={slot_count} top_k={top_k} combos={total_combinations} \
          seed_solutions={} appended={appended} prefixes={prefix_count} chunks={num_chunks} \
-         survivors={survivor_total} pruned_pct={pruned_pct:.1}% gpu={gpu_elapsed:?} total={:?}",
+         attempts={} survivors={survivor_total} pruned_pct={pruned_pct:.1}% gpu={gpu_elapsed:?} \
+         total={:?}",
         seed_ranked.len(),
+        attempt + 1,
         run_start.elapsed()
     );
 
@@ -1367,15 +1814,14 @@ fn run_gpu_search(
     let n = prepared.cands.len();
     let total_combinations = optimizer::n_choose_k(n, slot_count);
 
-    // シード（CPU）: 「w(m)降順上位 min(n,60) 件」∪「requirements 属性ごとの上位10件」で
-    // 厳密探索し、暫定 top-k の k位キーを閾値化する。シードの結果自体は topk へ投入しない
-    // （GPU は常に「全 n 候補」を対象に全数評価するため、シードが見つけた combo は必ず
-    // GPU 側でも再発見される — 部分集合は全候補の部分集合であり、シードの top-k は
-    // 真の top-k 以下という単調性で保証される。ここで先に投入すると、GPU が同じ combo を
-    // 再発見した際に重複エントリが生じる、部分集合が探索空間全体を覆うケースで顕在化する）。
-    let seed_positions = build_seed_positions(prepared);
-    let seed_prepared = prepared.subset(&seed_positions);
-    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, mode, true, true);
+    // シード（CPU）: 基本シード（w(m)降順上位∪requirements属性ごとの上位）と目標属性ごとの
+    // 個別シードの和集合（[`build_seed_ranked`] 参照）で厳密探索し、暫定 top-k の k位キーを
+    // 閾値化する。シードの結果自体は topk へ投入しない（GPU は常に「全 n 候補」を対象に
+    // 全数評価するため、シードが見つけた combo は必ず GPU 側でも再発見される — 部分集合は
+    // 全候補の部分集合であり、シードの top-k は真の top-k 以下という単調性で保証される。
+    // ここで先に投入すると、GPU が同じ combo を再発見した際に重複エントリが生じる、部分集合が
+    // 探索空間全体を覆うケースで顕在化する）。
+    let seed_ranked = build_seed_ranked(prepared, top_k, slot_count, mode);
 
     let mut topk = TopK::new(top_k);
 
@@ -1470,8 +1916,7 @@ fn run_gpu_search(
     // 単一ディスパッチ（チャンク分割なし。3節参照）。
     let dispatch_start = std::time::Instant::now();
     // counters[0]=appended, counters[1]=pruned をともに0初期化。
-    ctx.queue
-        .write_buffer(&counter_buf, 0, &[0u8; 8]);
+    ctx.queue.write_buffer(&counter_buf, 0, &[0u8; 8]);
 
     let params_bytes = build_params_bytes(
         n as u32,
@@ -1549,9 +1994,11 @@ fn run_gpu_search(
     let pruned_count = read_u32_at(&ctx.device, &ctx.queue, &counter_buf, 4)?;
     let gpu_elapsed = dispatch_start.elapsed();
 
-    // オーバーフロー（counter > 容量）はそのままCPUフォールバックへ回す。atomicAdd の到達順は
-    // 実行のたびに変わりうる任意サブセットであり、閾値以上の中の「上位」を保証しないため、
-    // 部分出力から閾値を引き締めて再試行するのは不健全（真の解を取りこぼしうる）。
+    // オーバーフロー（counter > 容量）はそのままCPUフォールバックへ回す。部分出力から閾値を
+    // 締め直して全空間を最初から**やり直す**リトライ自体は健全だが（[`run_gpu_search_chunked`]
+    // 関数docの「安全網」節参照）、この関数はデバッグ/比較用の単一パス実装で本番経路
+    // ([`GpuVariant::Chunked`]) ではないため、複雑さに見合わないとしてリトライは未実装のまま
+    // 即フォールバックする。
     if counter_value > CAPACITY {
         return Err(format!(
             "appendバッファがオーバーフローしました(counter={counter_value}, capacity={CAPACITY})"
@@ -1904,6 +2351,14 @@ mod tests {
     /// GPU版・CPU版の solutions 列（モジュールkey列＋全メトリクス）が完全一致することを検証する。
     /// [`RankMode::Link`]/[`RankMode::Lv5`] の両方でループする（呼び出し側の引数追加なしで
     /// 既存の全呼び出し箇所を自動的に両モードでカバーする設計。案A実装時に導入）。
+    ///
+    /// `expect_engine`: `Some(engine)` なら `gpu.engine == engine` も検証する（例:
+    /// `Some("gpu")` で「内部でCPUへ静かにフォールバックしていないこと」を保証する）。
+    /// これが必要な理由: GPU/CPU の解が一致するだけの検証では、GPU がオーバーフロー等で
+    /// 黙って CPU に委譲した場合も「一致」してしまう（委譲先も同じCPU実装のため区別が
+    /// つかない。実際に n=300 の目標属性シード不足で起きていた根本原因はこの穴を
+    /// すり抜けていた）。エンジンを問わない既存の呼び出し（境界値・trivially_emptyなど）は
+    /// `None` を渡す。
     #[allow(clippy::too_many_arguments)]
     fn assert_gpu_matches_cpu(
         modules: &[Module],
@@ -1913,6 +2368,7 @@ mod tests {
         requirements: &[(i32, usize)],
         top_k: usize,
         slot_count: usize,
+        expect_engine: Option<&str>,
         ctx_label: &str,
     ) {
         for mode in [RankMode::Link, RankMode::Lv5] {
@@ -1945,10 +2401,16 @@ mod tests {
             .unwrap_or_else(|e| panic!("GPU optimize failed [{ctx_label}]: {e}"));
             let dt = t.elapsed();
             eprintln!(
-                "[gpu-eq] {ctx_label}: modules={} slot={slot_count} top_k={top_k} solutions={} elapsed={dt:?}",
+                "[gpu-eq] {ctx_label}: modules={} slot={slot_count} top_k={top_k} solutions={} \
+                 engine={} elapsed={dt:?}",
                 modules.len(),
-                gpu.solutions.len()
+                gpu.solutions.len(),
+                gpu.engine
             );
+
+            if let Some(expected) = expect_engine {
+                assert_eq!(gpu.engine, expected, "engine mismatch [{ctx_label}]");
+            }
 
             assert_eq!(
                 cpu.candidate_count, gpu.candidate_count,
@@ -2025,6 +2487,102 @@ mod tests {
         );
     }
 
+    /// [`merge_seed_ranked_lists`] が複数リストを跨いだ重複も除去することを検証する
+    /// （根本原因対策の回帰テスト、GPU不要）。目標属性ごとの個別シード（複数リスト）を
+    /// 想定し、リストAとリストCに同一comboが重複して存在する場合でも、真のdistinct
+    /// top-kが得られることを確認する。
+    #[test]
+    fn merge_seed_ranked_lists_dedups_across_lists() {
+        fn key(eval_link: i64) -> Key {
+            [0, 0, 0, eval_link, 0, 0]
+        }
+        fn ranked(eval_link: i64, combo: &[u32]) -> Ranked {
+            Ranked {
+                key: key(eval_link),
+                combo: combo.to_vec(),
+            }
+        }
+
+        // list A（基本シード相当）: combo=[1](100), combo=[2](90)。
+        let list_a = vec![ranked(100, &[1]), ranked(90, &[2])];
+        // list B（目標属性Xの個別シード相当）: combo=[3](80)のみ新規。
+        let list_b = vec![ranked(80, &[3])];
+        // list C（目標属性Yの個別シード相当）: combo=[1](100)はlist Aと重複、combo=[4](70)が新規。
+        let list_c = vec![ranked(100, &[1]), ranked(70, &[4])];
+
+        let merged = merge_seed_ranked_lists(vec![list_a, list_b, list_c], 3);
+        // distinct(A∪B∪C) = {100(combo1), 90(combo2), 80(combo3), 70(combo4)}。
+        // 上位3件は {100, 90, 80}（重複除去しない実装なら100が2件占め、90/80のどちらかが
+        // 誤って落ちるか、4位=distinctでない70混入になる）。
+        let keys: Vec<i64> = merged.iter().map(|r| r.key[3]).collect();
+        assert_eq!(
+            keys,
+            vec![100, 90, 80],
+            "3リストを跨いだ重複除去後のtop-3が期待通りであるべき"
+        );
+        assert_eq!(merged.len(), 3, "top_k=3を超えないべき");
+    }
+
+    /// [`next_retry_threshold`] のリトライ可否判定を検証する（根本原因対策の安全網の
+    /// 回帰テスト、GPU不要）。追加解で閾値が締まる場合は `Some`、締まらない場合（現在値と
+    /// 同じ、または top_k 件に届かない）は `None` を返すことを確認する。
+    #[test]
+    fn next_retry_threshold_tightens_when_more_solutions_found() {
+        fn key(eval_link: i64) -> Key {
+            [0, 0, 0, eval_link, 0, 0]
+        }
+        let seed_ranked = vec![Ranked {
+            key: key(100),
+            combo: vec![1],
+        }];
+        // extra に2件追加すると distinct top-3 が揃い、3位=80になる（seedだけでは
+        // top_k=3件に届かず (0,0) 相当の緩い閾値のまま）。
+        let extra = vec![(key(90), vec![2u32]), (key(80), vec![3u32])];
+
+        let next = next_retry_threshold(&seed_ranked, extra, 3, RankMode::Link, (0, 0));
+        assert_eq!(
+            next,
+            Some(pack_key(&key(80), RankMode::Link)),
+            "distinct top-3が揃ったら3位キーへ締まるべき"
+        );
+    }
+
+    #[test]
+    fn next_retry_threshold_declines_when_no_improvement() {
+        fn key(eval_link: i64) -> Key {
+            [0, 0, 0, eval_link, 0, 0]
+        }
+        let seed_ranked = vec![
+            Ranked {
+                key: key(100),
+                combo: vec![1],
+            },
+            Ranked {
+                key: key(90),
+                combo: vec![2],
+            },
+        ];
+        // extra は seed と同一combo（重複）のみ。distinctはseedの2件のままでtop_k=3に届かず、
+        // マージ結果は None（=締め直せない）。
+        let extra = vec![(key(100), vec![1u32])];
+        let current = (0u32, 0u32);
+        assert_eq!(
+            next_retry_threshold(&seed_ranked, extra, 3, RankMode::Link, current),
+            None,
+            "top_k件に届かない場合はNoneであるべき"
+        );
+
+        // extra が十分にあり current と同じ閾値に「締まる」場合も、リトライしても無意味
+        // なので None を返すべき。
+        let extra2 = vec![(key(85), vec![3u32])];
+        let current2 = pack_key(&key(85), RankMode::Link);
+        assert_eq!(
+            next_retry_threshold(&seed_ranked, extra2, 3, RankMode::Link, current2),
+            None,
+            "current と同じ閾値に締まる場合はリトライ不要のためNoneであるべき"
+        );
+    }
+
     /// GPU実装バリアント同士（[`GpuVariant`]）の結果が完全一致することを検証する
     /// （取りこぼし検出の最強テスト。CPU参照不要で高速に回せる）。Phase B2 では
     /// [`GpuVariant::Chunked`]（本番・2フェーズ）と [`GpuVariant::SinglePassUnpruned`]
@@ -2033,6 +2591,14 @@ mod tests {
     /// （[`crate::optimizer::tests::bnb_pruning_on_off_same_keys`] と同じ設計思想）。
     /// [`RankMode::Link`]/[`RankMode::Lv5`] の両方でループする（[`assert_gpu_matches_cpu`]
     /// と同じ設計）。
+    ///
+    /// `expect_engine`: `Some(engine)` なら両バリアントの `engine` がそれと一致することも
+    /// 検証する（例: `Some("gpu")`）。**両バリアントが揃って CPU フォールバックに落ちると
+    /// 常に一致してしまい、このテストが実質 CPU vs CPU の比較へ無言で退化する**（GPU実装の
+    /// 取りこぼしを検出できなくなる）ため、n=230以上などフォールバックしないはずの条件では
+    /// 必ず `Some("gpu")` を渡すこと。特に [`GpuVariant::SinglePassUnpruned`]/
+    /// `SinglePassPruned`（[`run_gpu_search`]）はオーバーフロー時のリトライが未実装のため、
+    /// 閾値が緩いデータでは [`GpuVariant::Chunked`] より先に必ずフォールバックしうる。
     #[allow(clippy::too_many_arguments)]
     fn assert_variant_matches(
         modules: &[Module],
@@ -2043,6 +2609,7 @@ mod tests {
         slot_count: usize,
         variant_a: GpuVariant,
         variant_b: GpuVariant,
+        expect_engine: Option<&str>,
         ctx_label: &str,
     ) {
         for mode in [RankMode::Link, RankMode::Lv5] {
@@ -2073,6 +2640,21 @@ mod tests {
                 variant_b,
             )
             .unwrap_or_else(|e| panic!("{variant_b:?} failed [{ctx_label}]: {e}"));
+
+            eprintln!(
+                "[variant-eq] {ctx_label}: {variant_a:?}.engine={} {variant_b:?}.engine={}",
+                a.engine, b.engine
+            );
+            if let Some(expected) = expect_engine {
+                assert_eq!(
+                    a.engine, expected,
+                    "{variant_a:?} engine mismatch [{ctx_label}]"
+                );
+                assert_eq!(
+                    b.engine, expected,
+                    "{variant_b:?} engine mismatch [{ctx_label}]"
+                );
+            }
 
             assert_eq!(
                 a.solutions.len(),
@@ -2140,6 +2722,7 @@ mod tests {
                     slot,
                     GpuVariant::Chunked,
                     GpuVariant::SinglePassUnpruned,
+                    Some("gpu"),
                     &ctx,
                 );
             }
@@ -2184,6 +2767,7 @@ mod tests {
                         slot,
                         GpuVariant::Chunked,
                         GpuVariant::SinglePassUnpruned,
+                        Some("gpu"),
                         &ctx,
                     );
 
@@ -2197,6 +2781,7 @@ mod tests {
                         slot,
                         GpuVariant::Chunked,
                         GpuVariant::SinglePassUnpruned,
+                        Some("gpu"),
                         &ctx,
                     );
 
@@ -2210,6 +2795,7 @@ mod tests {
                         slot,
                         GpuVariant::Chunked,
                         GpuVariant::SinglePassUnpruned,
+                        Some("gpu"),
                         &ctx,
                     );
 
@@ -2223,6 +2809,7 @@ mod tests {
                         slot,
                         GpuVariant::Chunked,
                         GpuVariant::SinglePassUnpruned,
+                        Some("gpu"),
                         &ctx,
                     );
                 }
@@ -2257,13 +2844,33 @@ mod tests {
             for &slot in &[4usize, 5usize] {
                 for &top_k in &[3usize, 10, 100] {
                     let ctx = format!("{label} slot{slot} k{top_k} plain");
-                    assert_gpu_matches_cpu(modules, &[], &[], &[], &[], top_k, slot, &ctx);
+                    assert_gpu_matches_cpu(modules, &[], &[], &[], &[], top_k, slot, None, &ctx);
 
                     let ctx = format!("{label} slot{slot} k{top_k} selected");
-                    assert_gpu_matches_cpu(modules, &[2104], &[], &[], &[], top_k, slot, &ctx);
+                    assert_gpu_matches_cpu(
+                        modules,
+                        &[2104],
+                        &[],
+                        &[],
+                        &[],
+                        top_k,
+                        slot,
+                        None,
+                        &ctx,
+                    );
 
                     let ctx = format!("{label} slot{slot} k{top_k} soft_exclude");
-                    assert_gpu_matches_cpu(modules, &[2104], &[], &[1113], &[], top_k, slot, &ctx);
+                    assert_gpu_matches_cpu(
+                        modules,
+                        &[2104],
+                        &[],
+                        &[1113],
+                        &[],
+                        top_k,
+                        slot,
+                        None,
+                        &ctx,
+                    );
 
                     let ctx = format!("{label} slot{slot} k{top_k} requirements");
                     assert_gpu_matches_cpu(
@@ -2274,6 +2881,7 @@ mod tests {
                         &[(1110, 1)],
                         top_k,
                         slot,
+                        None,
                         &ctx,
                     );
                 }
@@ -2305,6 +2913,7 @@ mod tests {
                 slot,
                 GpuVariant::Chunked,
                 GpuVariant::SinglePassPruned,
+                Some("gpu"),
                 &ctx,
             );
             let ctx = format!("real142 slot{slot} k10 single_pass_pruned-vs-unpruned");
@@ -2317,6 +2926,7 @@ mod tests {
                 slot,
                 GpuVariant::SinglePassPruned,
                 GpuVariant::SinglePassUnpruned,
+                Some("gpu"),
                 &ctx,
             );
         }
@@ -2339,8 +2949,8 @@ mod tests {
             module(4, 5500103, &[(A, 20)]),
             module(5, 5500103, &[(A, 20)]),
         ];
-        assert_gpu_matches_cpu(&modules, &[], &[], &[], &[], 10, 4, "tie_break slot4");
-        assert_gpu_matches_cpu(&modules, &[], &[], &[], &[], 10, 5, "tie_break slot5");
+        assert_gpu_matches_cpu(&modules, &[], &[], &[], &[], 10, 4, None, "tie_break slot4");
+        assert_gpu_matches_cpu(&modules, &[], &[], &[], &[], 10, 5, None, "tie_break slot5");
     }
 
     /// n=300（MAX_N上限付近）で、Phase C要求の条件バリエーション（各1ケース以上）が
@@ -2366,6 +2976,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                Some("gpu"),
                 &format!("n300 slot{slot} no_target"),
             );
             assert_gpu_matches_cpu(
@@ -2376,6 +2987,7 @@ mod tests {
                 &[(1110, 2)],
                 10,
                 slot,
+                Some("gpu"),
                 &format!("n300 slot{slot} requirement_lv2"),
             );
             assert_gpu_matches_cpu(
@@ -2386,6 +2998,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                Some("gpu"),
                 &format!("n300 slot{slot} soft_exclude"),
             );
             assert_gpu_matches_cpu(
@@ -2396,6 +3009,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                Some("gpu"),
                 &format!("n300 slot{slot} hard_exclude"),
             );
             assert_gpu_matches_cpu(
@@ -2406,6 +3020,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                Some("gpu"),
                 &format!("n300 slot{slot} target_not_in_pool"),
             );
         }
@@ -2426,16 +3041,37 @@ mod tests {
             module(4, 5500103, &[(1, 5)]),
             module(5, 5500103, &[(1, 5)]),
         ];
-        assert_gpu_matches_cpu(&exact, &[], &[], &[], &[], 10, 5, "candidates==slots(5)");
+        assert_gpu_matches_cpu(
+            &exact,
+            &[],
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            Some("gpu"),
+            "candidates==slots(5)",
+        );
 
-        // 候補数 < slot_count(5): 解なし（trivially_empty）。
+        // 候補数 < slot_count(5): 解なし（trivially_empty）。探索するまでもなく空のため
+        // engine は "gpu" ではなく "cpu" 扱い（[`optimize_with_opts`] 参照）。
         let too_few = vec![
             module(1, 5500103, &[(1, 5)]),
             module(2, 5500103, &[(1, 5)]),
             module(3, 5500103, &[(1, 5)]),
             module(4, 5500103, &[(1, 5)]),
         ];
-        assert_gpu_matches_cpu(&too_few, &[], &[], &[], &[], 10, 5, "candidates<slots(4<5)");
+        assert_gpu_matches_cpu(
+            &too_few,
+            &[],
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            Some("cpu"),
+            "candidates<slots(4<5)",
+        );
     }
 
     /// 境界: n=301（GPU の [`MAX_N`]=300 を1件超える）で CPU フォールバックが維持される
@@ -2497,9 +3133,86 @@ mod tests {
                     &[],
                     top_k,
                     slot,
+                    None,
                     &format!("n300dup slot{slot} k{top_k}"),
                 );
             }
         }
+    }
+
+    /// フォールバック回帰テスト（根本原因対策の検証）: `build_seed_ranked` 導入前は、
+    /// 目標属性（`selected_mask`）がレアで w(m) 降順上位に担い手が現れないデータで
+    /// シード閾値が (0,0)（accept全部）に退化し、CAPACITY(2,097,152) 超過で静かに CPU へ
+    /// フォールバックしていた（n=300 実測: accept=8,694,564件、真の解は10件）。
+    /// このテストは実際にオーバーフローを起こしていた条件に近い n=200/300 × 実データ由来の
+    /// 目標属性（1110/1113/1114/1206）で、`engine=="gpu"` のまま完走し CPU と完全一致する
+    /// ことを検証する（[`assert_gpu_matches_cpu`] の `expect_engine=Some("gpu")`）。
+    /// 複数の目標属性を同時に指定するケース（[`build_mixed_selected_attrs_seed_positions`]、
+    /// S-1）もここでカバーする: 目標属性を1つずつ個別に扱うだけでは `sel_present>=2` の
+    /// 解をシードが見つけられず、W-1（リトライ2回目以降の閾値後退）の回帰も踏みやすい
+    /// 条件になる。BPSR_MODULE_DUMP_200/300 必須。実GPU必須のため #[ignore]。
+    #[test]
+    #[ignore]
+    fn gpu_matches_cpu_selected_attr_fallback_regression() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let path_300 = std::env::var("BPSR_MODULE_DUMP_300").expect("BPSR_MODULE_DUMP_300が必要");
+        let modules_300 = load_dump(&path_300);
+        for &target in &[1110i32, 1114] {
+            for &(soft_exclude, label) in &[
+                (&[][..], "no_soft_exclude"),
+                (&[1112, 1410][..], "soft_exclude"),
+            ] {
+                assert_gpu_matches_cpu(
+                    &modules_300,
+                    &[target],
+                    &[],
+                    soft_exclude,
+                    &[],
+                    10,
+                    5,
+                    Some("gpu"),
+                    &format!("n300 target={target} {label}"),
+                );
+            }
+        }
+        // S-1: 複数の目標属性を同時に指定（レアな属性を組み合わせ、mixed seed が実際に
+        // 効くことを確認する）。
+        assert_gpu_matches_cpu(
+            &modules_300,
+            &[1110, 1114, 1206, 1408],
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            Some("gpu"),
+            "n300 target=[1110,1114,1206,1408]",
+        );
+
+        let path_200 = std::env::var("BPSR_MODULE_DUMP_200").expect("BPSR_MODULE_DUMP_200が必要");
+        let modules_200 = load_dump(&path_200);
+        assert_gpu_matches_cpu(
+            &modules_200,
+            &[1110],
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            Some("gpu"),
+            "n200 target=1110 no_exclude",
+        );
+        assert_gpu_matches_cpu(
+            &modules_200,
+            &[1110, 1113, 1206],
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            Some("gpu"),
+            "n200 target=[1110,1113,1206]",
+        );
     }
 }

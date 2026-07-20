@@ -1018,8 +1018,10 @@ pub(crate) fn prepare<'a>(
 
 /// AttrBounds/SuffixSum（B&B 上界剪定用）を構築し、rayon 並列 DFS で top-k を求める。
 /// `prepared` は [`prepare`] の出力（w(m) 降順ソート済み、`prepared.cands.len()` 件を探索）。
-/// GPU探索（optimizer_gpu）は「w(m)降順上位min(n,60)件」∪「requirements属性ごとの値上位10件」
-/// （`build_seed_positions`）に絞った [`Prepared::subset`] をここへ渡すことで、GPU 全数評価の
+/// GPU探索（optimizer_gpu）は、基本シード（「w(m)降順上位min(n,60)件」∪「requirements属性
+/// ごとの値上位10件」、`build_seed_positions`）と、目標属性ごとの個別シード
+/// （`build_selected_attr_seed_positions`）の両方に絞った [`Prepared::subset`] をここへ渡し、
+/// 得られた実解の和集合（`build_seed_ranked`、`merge_seed_ranked_lists`）から GPU 全数評価の
 /// 足切り閾値を得る CPU 厳密シードとしても使う。
 pub(crate) fn search_cpu(
     prepared: &Prepared,
