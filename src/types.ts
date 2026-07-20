@@ -3,6 +3,14 @@
 // 属性の選択状態。AttributePicker / App / プリセットで共有するドメイン型。
 export type AttrState = "none" | "target" | "exclude";
 
+// ランキング順序モード。Rust 側 optimizer::RankMode の serde snake_case 表現と一致させること
+// （optimizer.rs の rank_mode_serde_snake_case テストで固定済み）。
+// - "link"（既定）: Lv6数の次に評価リンク（合計値）を優先し、Lv5数はその後に回す。
+// - "lv5": Lv6数の次にLv5到達数（個数）を優先し、評価リンクはその後に回す。
+// 2つの順序は一般には互いに他方の1位を再現できない（データ依存で必要な保持件数が
+// 数百〜数千に達しうると実測確認済み）ため、モードを切り替えたら再検索が必要。
+export type RankMode = "link" | "lv5";
+
 export interface AttrMeta {
   id: number;
   name: string;
@@ -44,7 +52,6 @@ export interface Solution {
   lv5_count: number;
   selected_lv6: number;
   selected_present: number; // 選択属性のうち結果に存在する数（Lv1以上）。ランキング最優先キー
-  level_sum: number;
   breakdown: AttrBreakdown[];
 }
 
@@ -81,6 +88,9 @@ export interface SearchPreset {
   // （属性のみランキング集計から除外）。旧プリセットには存在しないため false（ソフト）に
   // フォールバックする。
   hardExclude: boolean;
+  // ランキング順序モード。旧プリセット（本機能追加前）には存在しないため、適用側で
+  // "link"（既定・従来の唯一の順序）にフォールバックする。
+  rankMode: RankMode;
   createdAt: number;
 }
 

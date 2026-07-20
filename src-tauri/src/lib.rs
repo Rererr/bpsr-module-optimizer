@@ -1,5 +1,7 @@
-//! bpsr-module-optimizer: 所持モジュールから、Lv6数 → Lv5数 → レベル合計 →
-//! リンク効果 の優先度で最良の枠（4または5）の組み合わせを求める Tauri アプリ。
+//! bpsr-module-optimizer: 所持モジュールから、Lv6数 → 評価リンク → Lv5数（既定の `Link`
+//! モード）または Lv6数 → Lv5数 → 評価リンク（`Lv5` モード）の優先度で最良の枠
+//! （4または5）の組み合わせを求める Tauri アプリ。ランキング順序モードは
+//! `optimizer::RankMode` 参照。
 
 mod attrs;
 mod capture;
@@ -10,7 +12,7 @@ mod optimizer_gpu;
 mod state;
 
 use attrs::AttrMeta;
-use optimizer::{Module, OptimizeResult};
+use optimizer::{Module, OptimizeResult, RankMode};
 use serde::{Deserialize, Serialize};
 use state::SharedState;
 use std::path::PathBuf;
@@ -149,6 +151,8 @@ async fn optimize(
     top_k: usize,
     // 装備枠数。現状は 4 または 5 のみ対応。
     slot_count: usize,
+    // ランキング順序モード。フロントは常に明示送信する。
+    rank_mode: RankMode,
 ) -> Result<OptimizeResult, String> {
     // MutexGuard を await をまたいで保持しないよう、先にモジュールを複製する。
     let modules = state.lock().expect("state poisoned").modules.clone();
@@ -171,6 +175,7 @@ async fn optimize(
             &requirements,
             top_k,
             slot_count,
+            rank_mode,
         )
     })
     .await

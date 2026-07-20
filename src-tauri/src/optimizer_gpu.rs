@@ -19,7 +19,7 @@
 //!    スレッド = 1組合せ ではなく、スレッド = (slot_count-1)個の「プレフィックス」組合せ
 //!    1つ。プレフィックスを combinadic で unrank した後、末尾候補を prefix_last+1..n で
 //!    ループしながら [`crate::optimizer::Accum::add`]/`remove` と同じレベル遷移差分更新で
-//!    7カウンタを増分更新する（「1組合せ=1スレッド」方式で全スレッドが O(n) の unrank を
+//!    6カウンタを増分更新する（「1組合せ=1スレッド」方式で全スレッドが O(n) の unrank を
 //!    行っていたコストを、プレフィックスあたり1回に削減）。候補データはワークグループ共有
 //!    メモリへ協調ロードする。総プレフィックス数 P=C(n,slot_count-1) は n<=300 なら u32 に
 //!    確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
@@ -48,11 +48,15 @@
 //!   固定長上限。optimize.wgsl の `MAX_N` と一致させること）
 //! - モジュールのパーツ数が GPU カーネルの前提（[`MAX_PARTS`]=3）を超える
 //!   （実データ・design docの前提は3だが、将来データが崩れた場合の安全弁として追加）
-//! - eval_link・excl の理論上界が 0xFFFF を超える（キー packing の bit 幅を超える）
+//! - 属性値に負値が含まれる（キー packing は非負値を前提とするため。ゲーム側は常に非負の
+//!   はずだが、将来データが崩れた場合の安全弁として追加）
+//! - eval_link の理論上界が [`RankMode`] ごとの上界（`Link`=0x3FFF、`Lv5`=0xFFFF）を、
+//!   excl の理論上界が 0xFFFF を超える（[`pack_key`] のキー packing の bit 幅を超える）
 //! - GPU 実行時エラー・panic（デバイスロスト、シェーダ実行時エラー等）
 
-use crate::optimizer::{self, Accum, Cand, Key, Module, OptimizeResult, Prepared, Ranked, TopK};
-use std::cmp::Reverse;
+use crate::optimizer::{
+    self, Accum, Cand, Key, Module, OptimizeResult, Prepared, RankMode, Ranked, TopK,
+};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use wgpu::util::DeviceExt;
@@ -64,6 +68,29 @@ const MAX_PARTS: usize = 3;
 
 /// append バッファの容量（optimize.wgsl の `CAPACITY` と一致させること）。
 const CAPACITY: u32 = 2_097_152;
+
+/// キー packing（[`pack_key`]）で eval_link に割り当てる bit 幅は [`RankMode`] により異なる
+/// （[`pack_key`] のビット配置図参照）。理論上界がこれを超えるクエリは呼び出し側
+/// （`value_bounds` 判定、[`eval_link_key_max`]）で CPU へフォールバックするため、この幅は
+/// 「実データで十分な余裕を持つ固定値」であって理論上の絶対上限の証明ではない。
+/// `Link`: hi 側の空き14bitに詰める（sel_present/sel_lv6/lv6 が hi の残りを占有するため）。
+const EVAL_LINK_KEY_BITS_LINK: u32 = 14;
+/// eval_link が `Link` モードのキー packing に収まる理論上界（2^14 - 1 = 16383）。
+const EVAL_LINK_KEY_MAX_LINK: i64 = (1i64 << EVAL_LINK_KEY_BITS_LINK) - 1;
+/// eval_link が `Lv5` モードのキー packing に収まる理論上界。`Lv5` モードでは eval_link を
+/// lo の16bit全体に置く（level_sum 概念削除前の旧レイアウトを踏襲。実運用で長期間
+/// 検証済みの配置であり、`Link` モードの14bitより大幅に余裕がある）。
+const EVAL_LINK_KEY_MAX_LV5: i64 = 0xFFFF;
+/// excl（ソフト除外合計）がキー packing に収まる理論上界（lo の下位16bit、両モード共通）。
+const EXCL_KEY_MAX: i64 = 0xFFFF;
+
+/// モードごとの eval_link 上界（[`value_bounds`] のフォールバック判定に使う）。
+fn eval_link_key_max(mode: RankMode) -> i64 {
+    match mode {
+        RankMode::Link => EVAL_LINK_KEY_MAX_LINK,
+        RankMode::Lv5 => EVAL_LINK_KEY_MAX_LV5,
+    }
+}
 
 /// GPUカーネルが候補データをワークグループ共有メモリへ協調ロードする際の固定長上限
 /// （optimize.wgsl の `MAX_N` と一致させること）。n がこれを超えたらCPUへフォールバックする。
@@ -362,19 +389,70 @@ fn init_gpu_context() -> Result<GpuContext, String> {
 }
 
 /// キー（[`Key`]）を optimize.wgsl の hi/lo packing と同じビット割当で u32 2つへ詰める。
-/// hi: sel_present(6bit) | sel_lv6(6bit) | lv6(6bit) | lv5(6bit) | level_sum(8bit)
-/// lo: eval_link(16bit) | (0xFFFF - excl)(16bit)
-/// 各成分が対応 bit 幅に収まることは呼び出し側のフォールバック判定（n_attr<=32・
-/// eval_link/excl上界<=0xFFFF）で事前に保証されている。
-fn pack_key(key: &Key) -> (u32, u32) {
-    let (sel_present, sel_lv6, lv6, lv5, level_sum, eval_link, Reverse(excl)) = *key;
-    let hi = ((sel_present as u32) << 26)
-        | ((sel_lv6 as u32) << 20)
-        | ((lv6 as u32) << 14)
-        | ((lv5 as u32) << 8)
-        | (level_sum as u32);
-    let lo = ((eval_link as u32) << 16) | (0xFFFFu32 - (excl as u32));
-    (hi, lo)
+/// モードにより配置が異なる（optimize.wgsl / optimize_chunked.wgsl の `pack_hi_lo` と
+/// 完全に一致させること。両ファイルとも「明示的な2分岐」で実装し、汎用シフト/マスクの
+/// uniform 渡しは行わない — 静かに順序が壊れると「刈りすぎ＝最適解を無言で失う」箇所の
+/// ため、分岐コストより可読性・レビュー容易性を優先する）:
+///
+/// - `Link`: hi = sel_present(6)|sel_lv6(6)|lv6(6)|eval_link(14)、
+///   lo = lv5(16、実際に使う値は数個程度)|(0xFFFF-excl)(16)
+/// - `Lv5` : hi = sel_present(6)|sel_lv6(6)|lv6(6)|lv5(6)|未使用(8)、
+///   lo = eval_link(16)|(0xFFFF-excl)(16)
+///
+/// hi/lo の2語比較（hi優先→lo）がそのままキーの辞書式順序を保つのは、各成分がより上位の
+/// 成分より必ず低いbit位置に詰まっているため。`Lv5` モードは level_sum 概念削除前の
+/// 旧レイアウト（eval_link を lo の16bit全体に置く、実運用で長期間検証済みの配置）を
+/// 踏襲する。
+///
+/// 各成分が対応 bit 幅に収まることは呼び出し側のフォールバック判定
+/// （n_attr<=32・eval_link上界<=[`eval_link_key_max`]`(mode)`・excl上界<=[`EXCL_KEY_MAX`]）で
+/// 事前に保証されている。lv5 は候補データの構造的上限（MAX_PARTS×slot_count<=15）から
+/// 16bit（`Link`）/6bit（`Lv5`）どちらにも収まることが自明なため実行時チェックしない。
+///
+/// `assert` はその保証が破れていないかの唯一の保険。GPU探索の健全性が `value_bounds` に
+/// よるフォールバックゲート1点に依存しており、ここが破れた場合の症状は panic やエラーでは
+/// なく「eval_link の桁溢れが上位ビット（sel_present/lv6 等）を汚染し、最適解が誤って
+/// 刈られて静かに消える」という気付きにくい形で出るため、将来ゲートを迂回する経路が
+/// 増えても確実に検出できるようにしておく。GPU探索のテストは n=300 の実行時間の都合上
+/// `--release` 前提で回すため、あえて `debug_assert!` ではなく `assert!` を使う
+/// （`--release` では `debug_assert!` は evaluate すらされず、唯一のゲートの保険が
+/// 事実上機能しないため）。呼び出しは1ディスパッチあたり O(1) でコストは無視できる。
+fn pack_key(key: &Key, mode: RankMode) -> (u32, u32) {
+    let sel_present = key[0] as u32;
+    let sel_lv6 = key[1] as u32;
+    let lv6 = key[2] as u32;
+    // Accum::key/naive_ranked は -excl を格納しているので符号を戻す。
+    let excl = (-key[5]) as u32;
+    assert!(
+        i64::from(excl) <= EXCL_KEY_MAX,
+        "excl がキー packing の bit 幅を超えています (excl={excl}, EXCL_KEY_MAX={EXCL_KEY_MAX})"
+    );
+    match mode {
+        RankMode::Link => {
+            let eval_link = key[3] as u32;
+            let lv5 = key[4] as u32;
+            assert!(
+                i64::from(eval_link) <= EVAL_LINK_KEY_MAX_LINK,
+                "eval_link がキー packing の bit 幅を超えています \
+                 (eval_link={eval_link}, EVAL_LINK_KEY_MAX_LINK={EVAL_LINK_KEY_MAX_LINK})"
+            );
+            let hi = (sel_present << 26) | (sel_lv6 << 20) | (lv6 << 14) | eval_link;
+            let lo = (lv5 << 16) | (0xFFFFu32 - excl);
+            (hi, lo)
+        }
+        RankMode::Lv5 => {
+            let lv5 = key[3] as u32;
+            let eval_link = key[4] as u32;
+            assert!(
+                i64::from(eval_link) <= EVAL_LINK_KEY_MAX_LV5,
+                "eval_link がキー packing の bit 幅を超えています \
+                 (eval_link={eval_link}, EVAL_LINK_KEY_MAX_LV5={EVAL_LINK_KEY_MAX_LV5})"
+            );
+            let hi = (sel_present << 26) | (sel_lv6 << 20) | (lv6 << 14) | (lv5 << 8);
+            let lo = (eval_link << 16) | (0xFFFFu32 - excl);
+            (hi, lo)
+        }
+    }
 }
 
 /// eval_link/excl の値域上界（slot_count 個選んだ時に理論上到達しうる最大値、i64で計算）。
@@ -406,6 +484,15 @@ fn mask_bits(mask: &[bool]) -> u32 {
     mask.iter()
         .enumerate()
         .fold(0u32, |acc, (i, &b)| if b { acc | (1u32 << i) } else { acc })
+}
+
+/// GPU側 Params.rank_mode のエンコード（optimize.wgsl / optimize_chunked.wgsl の
+/// `RANK_MODE_LINK`/`RANK_MODE_LV5` 定数と一致させること）。
+fn rank_mode_u32(mode: RankMode) -> u32 {
+    match mode {
+        RankMode::Link => 0,
+        RankMode::Lv5 => 1,
+    }
 }
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
@@ -512,12 +599,12 @@ fn build_seed_positions(prepared: &Prepared) -> Vec<usize> {
 /// 単純な running-max スキャンで計算できる。
 ///
 /// レイアウト（1本の storage buffer にまとめてバインディング数を節約する）:
-///   \[attr_suffix_max: n_attr*(n+1) i32\] ++ \[w_suffix_max: (n+1) i32\] ++ \[g_suffix_max: (n+1) i32\]
+///   \[attr_suffix_max: n_attr*(n+1) i32\] ++ \[w_suffix_max: (n+1) i32\]
 /// - `attr_suffix_max[a*(n+1)+s]` = `cands[s..n]` における属性 a の単一候補寄与値（同一候補の
 ///   複数パーツ合計、[`optimizer::AttrBounds`] の values と同じ定義）の最大値。ソフト除外属性の
 ///   行も一様に計算するが、カーネル側のプルーニングロジックは soft_excl_mask で弾いて参照しない。
-/// - `w_suffix_max[s]` = counted w(m)（非ソフト除外パーツ値合計）の suffix 単一最大値。
-/// - `g_suffix_max[s]` = counted g(m)（非ソフト除外パーツのレベル値合計）の suffix 単一最大値。
+/// - `w_suffix_max[s]` = counted w(m)（非ソフト除外パーツ値合計）の suffix 単一最大値
+///   （評価リンク上界に使う）。
 ///
 /// 位置 s=n（空 suffix）は常に0。
 fn build_suffix_max_bytes(prepared: &Prepared) -> Vec<u8> {
@@ -525,17 +612,15 @@ fn build_suffix_max_bytes(prepared: &Prepared) -> Vec<u8> {
     let n_attr = prepared.n_attr;
     let soft_excl_mask = &prepared.soft_excl_mask;
 
-    // 候補ごとの寄与値（属性ごとの合計・counted w(m)・counted g(m)）。
+    // 候補ごとの寄与値（属性ごとの合計・counted w(m)）。
     let mut attr_val = vec![0i32; n * n_attr];
     let mut w_val = vec![0i32; n];
-    let mut g_val = vec![0i32; n];
     for (i, c) in prepared.cands.iter().enumerate() {
         for &(a, v) in &c.parts {
             let a = a as usize;
             attr_val[i * n_attr + a] += v;
             if !soft_excl_mask[a] {
                 w_val[i] += v;
-                g_val[i] += optimizer::level_of(v) as i32;
             }
         }
     }
@@ -543,7 +628,6 @@ fn build_suffix_max_bytes(prepared: &Prepared) -> Vec<u8> {
     // suffix 単一最大値（末尾 s=n から前方へ running max）。
     let mut attr_suffix_max = vec![0i32; n_attr * (n + 1)];
     let mut w_suffix_max = vec![0i32; n + 1];
-    let mut g_suffix_max = vec![0i32; n + 1];
     for s in (0..n).rev() {
         for a in 0..n_attr {
             let prev = attr_suffix_max[a * (n + 1) + s + 1];
@@ -551,19 +635,13 @@ fn build_suffix_max_bytes(prepared: &Prepared) -> Vec<u8> {
             attr_suffix_max[a * (n + 1) + s] = prev.max(here);
         }
         w_suffix_max[s] = w_suffix_max[s + 1].max(w_val[s]);
-        g_suffix_max[s] = g_suffix_max[s + 1].max(g_val[s]);
     }
 
-    let mut bytes = Vec::with_capacity(
-        (attr_suffix_max.len() + w_suffix_max.len() + g_suffix_max.len()) * 4,
-    );
+    let mut bytes = Vec::with_capacity((attr_suffix_max.len() + w_suffix_max.len()) * 4);
     for &v in &attr_suffix_max {
         push_i32(&mut bytes, v);
     }
     for &v in &w_suffix_max {
-        push_i32(&mut bytes, v);
-    }
-    for &v in &g_suffix_max {
         push_i32(&mut bytes, v);
     }
     bytes
@@ -585,8 +663,9 @@ fn build_params_bytes(
     threshold_hi: u32,
     threshold_lo: u32,
     prune_enabled: u32,
+    rank_mode: u32,
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(12 * 4);
+    let mut bytes = Vec::with_capacity(13 * 4);
     for v in [
         n,
         slot_count,
@@ -600,6 +679,7 @@ fn build_params_bytes(
         threshold_hi,
         threshold_lo,
         prune_enabled,
+        rank_mode,
     ] {
         push_u32(&mut bytes, v);
     }
@@ -622,8 +702,9 @@ fn build_params_chunked_bytes(
     threshold_lo: u32,
     chunk_start: u32,
     chunk_count: u32,
+    rank_mode: u32,
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(11 * 4);
+    let mut bytes = Vec::with_capacity(12 * 4);
     for v in [
         n,
         slot_count,
@@ -636,6 +717,7 @@ fn build_params_chunked_bytes(
         threshold_lo,
         chunk_start,
         chunk_count,
+        rank_mode,
     ] {
         push_u32(&mut bytes, v);
     }
@@ -719,7 +801,12 @@ fn read_combos(
 /// 残りはNO_PARTパディング）を CPU 側 [`Accum`] で厳密再計算する（GPU 側の結果は一切
 /// 信用しない）。combo は元index昇順にソート済みで返す。チャンク0の閾値リファインメント
 /// 計算と、全チャンク投入後の最終マージの両方で共有するヘルパー。
-fn recompute_combo(prepared: &Prepared, slot_count: usize, raw: &[u32]) -> Result<(Key, Vec<u32>), String> {
+fn recompute_combo(
+    prepared: &Prepared,
+    slot_count: usize,
+    raw: &[u32],
+    mode: RankMode,
+) -> Result<(Key, Vec<u32>), String> {
     let n = prepared.cands.len();
     let sorted_indices = &raw[..slot_count];
     if sorted_indices.iter().any(|&si| si as usize >= n) {
@@ -733,7 +820,7 @@ fn recompute_combo(prepared: &Prepared, slot_count: usize, raw: &[u32]) -> Resul
             &prepared.soft_excl_mask,
         );
     }
-    let key = acc.key();
+    let key = acc.key(mode);
     let mut combo: Vec<u32> = sorted_indices
         .iter()
         .map(|&si| prepared.order[si as usize] as u32)
@@ -886,6 +973,7 @@ fn run_gpu_search_chunked(
     prepared: &Prepared,
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
 ) -> Result<Vec<Ranked>, String> {
     let run_start = std::time::Instant::now();
     let n = prepared.cands.len();
@@ -894,10 +982,10 @@ fn run_gpu_search_chunked(
     // シード（CPU）: run_gpu_search と同じロジックで閾値を得る。
     let seed_positions = build_seed_positions(prepared);
     let seed_prepared = prepared.subset(&seed_positions);
-    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, true, true);
+    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, mode, true, true);
 
     let mut threshold: (u32, u32) = if seed_ranked.len() >= top_k {
-        pack_key(&seed_ranked[top_k - 1].key)
+        pack_key(&seed_ranked[top_k - 1].key, mode)
     } else {
         (0, 0)
     };
@@ -991,7 +1079,7 @@ fn run_gpu_search_chunked(
     // params は毎チャンク chunk_start/chunk_count を書き換えて使い回す。
     let params_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("params_chunked"),
-        size: 11 * 4,
+        size: 12 * 4,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -1107,6 +1195,7 @@ fn run_gpu_search_chunked(
             threshold.1,
             chunk_start,
             chunk_count,
+            rank_mode_u32(mode),
         );
         dispatch_one_chunk(
             ctx,
@@ -1152,10 +1241,10 @@ fn run_gpu_search_chunked(
             // 重複除去の理由は [`merge_topk_for_refinement`] のdoc参照（admissible性の前提）。
             let mut extra = Vec::with_capacity(appended0 as usize);
             for raw in combos0.chunks_exact(5) {
-                extra.push(recompute_combo(prepared, slot_count, raw)?);
+                extra.push(recompute_combo(prepared, slot_count, raw, mode)?);
             }
             if let Some(worst_key) = merge_topk_for_refinement(&seed_ranked, extra, top_k) {
-                let refined = pack_key(&worst_key);
+                let refined = pack_key(&worst_key, mode);
                 // 「ログに出すか」だけの条件分岐であり、`threshold` への代入は常に無条件で
                 // 行う（refined が old と同値でも、明示的に再代入して以降のロジックが
                 // 常に最新のリファインメント結果を参照するようにする。ログを出す/出さないは
@@ -1192,6 +1281,7 @@ fn run_gpu_search_chunked(
             threshold.1,
             chunk_start,
             chunk_count,
+            rank_mode_u32(mode),
         );
         dispatch_one_chunk(
             ctx,
@@ -1237,7 +1327,7 @@ fn run_gpu_search_chunked(
     if appended > 0 {
         let combos = read_combos(&ctx.device, &ctx.queue, &out_buf, appended as usize)?;
         for raw in combos.chunks_exact(5) {
-            let (key, combo) = recompute_combo(prepared, slot_count, raw)?;
+            let (key, combo) = recompute_combo(prepared, slot_count, raw, mode)?;
             topk.offer(key, &combo);
         }
     }
@@ -1270,6 +1360,7 @@ fn run_gpu_search(
     prepared: &Prepared,
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
     prune_enabled: bool,
 ) -> Result<Vec<Ranked>, String> {
     let run_start = std::time::Instant::now();
@@ -1284,12 +1375,12 @@ fn run_gpu_search(
     // 再発見した際に重複エントリが生じる、部分集合が探索空間全体を覆うケースで顕在化する）。
     let seed_positions = build_seed_positions(prepared);
     let seed_prepared = prepared.subset(&seed_positions);
-    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, true, true);
+    let seed_ranked = optimizer::search_cpu(&seed_prepared, top_k, slot_count, mode, true, true);
 
     let mut topk = TopK::new(top_k);
 
     let threshold: (u32, u32) = if seed_ranked.len() >= top_k {
-        pack_key(&seed_ranked[top_k - 1].key)
+        pack_key(&seed_ranked[top_k - 1].key, mode)
     } else {
         // シード部分集合だけでは top_k 件すら見つからない稀なケース。安全側に倒し、
         // 閾値なし（=すべて拾う）から始める。
@@ -1395,6 +1486,7 @@ fn run_gpu_search(
         threshold.0,
         threshold.1,
         u32::from(prune_enabled),
+        rank_mode_u32(mode),
     );
     let params_buf = ctx
         .device
@@ -1492,7 +1584,7 @@ fn run_gpu_search(
                     &prepared.soft_excl_mask,
                 );
             }
-            let key = acc.key();
+            let key = acc.key(mode);
             let mut combo: Vec<u32> = sorted_indices
                 .iter()
                 .map(|&si| prepared.order[si as usize] as u32)
@@ -1533,6 +1625,7 @@ fn cpu_fallback(
     requirements: &[(i32, usize)],
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
     reason: &str,
 ) -> Result<OptimizeResult, String> {
     log::warn!("[gpu] {reason} のためCPU探索へフォールバックします");
@@ -1545,6 +1638,7 @@ fn cpu_fallback(
         requirements,
         top_k,
         slot_count,
+        mode,
     )
 }
 
@@ -1562,6 +1656,7 @@ pub fn optimize(
     requirements: &[(i32, usize)],
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
 ) -> Result<OptimizeResult, String> {
     optimize_with_opts(
         modules,
@@ -1572,6 +1667,7 @@ pub fn optimize(
         requirements,
         top_k,
         slot_count,
+        mode,
         GpuVariant::Chunked,
     )
 }
@@ -1590,6 +1686,7 @@ fn optimize_with_opts(
     requirements: &[(i32, usize)],
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
     variant: GpuVariant,
 ) -> Result<OptimizeResult, String> {
     // prepare は CPU/GPU 共通ロジック。バリデーションエラーはフォールバックせずそのまま返す
@@ -1628,11 +1725,25 @@ fn optimize_with_opts(
         Some(format!(
             "モジュールのパーツ数がGPUカーネルの前提({MAX_PARTS})を超えています"
         ))
+    } else if prepared
+        .cands
+        .iter()
+        .flat_map(|c| c.parts.iter())
+        .any(|&(_, v)| v < 0)
+    {
+        // eval_link は Link モードでは hi の下位14bitに、Lv5 モードでは lo の上位16bitに
+        // 直接詰まるため、負値が1つでも混ざると符号ビットの桁上がりで他の成分（Link では
+        // sel_present/sel_lv6/lv6、Lv5 では excl）まで汚染しうる。value_bounds は上界しか
+        // 見ないため負値をすり抜けさせてしまう。ゲーム側の属性値は常に非負のはずだが、将来
+        // データが崩れた場合の安全弁として明示的に弾く。
+        Some("属性値に負値が含まれています（キー packing は非負値を前提とする）".to_string())
     } else {
         let (eval_bound, excl_bound) = value_bounds(&prepared, slot_count);
-        if eval_bound > 0xFFFF || excl_bound > 0xFFFF {
+        let eval_max = eval_link_key_max(mode);
+        if eval_bound > eval_max || excl_bound > EXCL_KEY_MAX {
             Some(format!(
-                "eval_link/excl の理論上界が0xFFFFを超えています(eval={eval_bound}, excl={excl_bound})"
+                "eval_link/excl の理論上界がキーpacking幅を超えています\
+                 (mode={mode:?}, eval={eval_bound}>{eval_max:#x}, excl={excl_bound}>{EXCL_KEY_MAX:#x})"
             ))
         } else {
             None
@@ -1649,6 +1760,7 @@ fn optimize_with_opts(
             requirements,
             top_k,
             slot_count,
+            mode,
             &reason,
         );
     }
@@ -1665,6 +1777,7 @@ fn optimize_with_opts(
                 requirements,
                 top_k,
                 slot_count,
+                mode,
                 &format!("GPU初期化に失敗しました: {e}"),
             );
         }
@@ -1674,9 +1787,13 @@ fn optimize_with_opts(
     // 捕捉してCPUフォールバックへ回す。パニック後にGPUステート自体を再利用しないため
     // AssertUnwindSafe で安全。
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match variant {
-        GpuVariant::Chunked => run_gpu_search_chunked(ctx, &prepared, top_k, slot_count),
-        GpuVariant::SinglePassPruned => run_gpu_search(ctx, &prepared, top_k, slot_count, true),
-        GpuVariant::SinglePassUnpruned => run_gpu_search(ctx, &prepared, top_k, slot_count, false),
+        GpuVariant::Chunked => run_gpu_search_chunked(ctx, &prepared, top_k, slot_count, mode),
+        GpuVariant::SinglePassPruned => {
+            run_gpu_search(ctx, &prepared, top_k, slot_count, mode, true)
+        }
+        GpuVariant::SinglePassUnpruned => {
+            run_gpu_search(ctx, &prepared, top_k, slot_count, mode, false)
+        }
     }));
 
     let ranked = match result {
@@ -1691,6 +1808,7 @@ fn optimize_with_opts(
                 requirements,
                 top_k,
                 slot_count,
+                mode,
                 &format!("GPU実行エラー: {e}"),
             );
         }
@@ -1704,6 +1822,7 @@ fn optimize_with_opts(
                 requirements,
                 top_k,
                 slot_count,
+                mode,
                 "GPU実行中にpanicが発生しました",
             );
         }
@@ -1783,6 +1902,8 @@ mod tests {
     }
 
     /// GPU版・CPU版の solutions 列（モジュールkey列＋全メトリクス）が完全一致することを検証する。
+    /// [`RankMode::Link`]/[`RankMode::Lv5`] の両方でループする（呼び出し側の引数追加なしで
+    /// 既存の全呼び出し箇所を自動的に両モードでカバーする設計。案A実装時に導入）。
     #[allow(clippy::too_many_arguments)]
     fn assert_gpu_matches_cpu(
         modules: &[Module],
@@ -1794,68 +1915,72 @@ mod tests {
         slot_count: usize,
         ctx_label: &str,
     ) {
-        let cpu = optimizer::optimize(
-            modules,
-            selected_ids,
-            Some("all"),
-            hard_exclude_ids,
-            soft_exclude_ids,
-            requirements,
-            top_k,
-            slot_count,
-        )
-        .unwrap_or_else(|e| panic!("CPU optimize failed [{ctx_label}]: {e}"));
+        for mode in [RankMode::Link, RankMode::Lv5] {
+            let ctx_label = format!("{ctx_label} mode={mode:?}");
+            let cpu = optimizer::optimize(
+                modules,
+                selected_ids,
+                Some("all"),
+                hard_exclude_ids,
+                soft_exclude_ids,
+                requirements,
+                top_k,
+                slot_count,
+                mode,
+            )
+            .unwrap_or_else(|e| panic!("CPU optimize failed [{ctx_label}]: {e}"));
 
-        let t = Instant::now();
-        let gpu = optimize(
-            modules,
-            selected_ids,
-            Some("all"),
-            hard_exclude_ids,
-            soft_exclude_ids,
-            requirements,
-            top_k,
-            slot_count,
-        )
-        .unwrap_or_else(|e| panic!("GPU optimize failed [{ctx_label}]: {e}"));
-        let dt = t.elapsed();
-        eprintln!(
-            "[gpu-eq] {ctx_label}: modules={} slot={slot_count} top_k={top_k} solutions={} elapsed={dt:?}",
-            modules.len(),
-            gpu.solutions.len()
-        );
+            let t = Instant::now();
+            let gpu = optimize(
+                modules,
+                selected_ids,
+                Some("all"),
+                hard_exclude_ids,
+                soft_exclude_ids,
+                requirements,
+                top_k,
+                slot_count,
+                mode,
+            )
+            .unwrap_or_else(|e| panic!("GPU optimize failed [{ctx_label}]: {e}"));
+            let dt = t.elapsed();
+            eprintln!(
+                "[gpu-eq] {ctx_label}: modules={} slot={slot_count} top_k={top_k} solutions={} elapsed={dt:?}",
+                modules.len(),
+                gpu.solutions.len()
+            );
 
-        assert_eq!(
-            cpu.candidate_count, gpu.candidate_count,
-            "candidate_count mismatch [{ctx_label}]"
-        );
-        assert_eq!(
-            cpu.combinations, gpu.combinations,
-            "combinations mismatch [{ctx_label}]"
-        );
-        assert_eq!(
-            cpu.solutions.len(),
-            gpu.solutions.len(),
-            "solutions件数 mismatch [{ctx_label}]"
-        );
-        for (i, (c, g)) in cpu.solutions.iter().zip(gpu.solutions.iter()).enumerate() {
-            let ctx = format!("{ctx_label} rank={i}");
-            let c_keys: Vec<i64> = c.modules.iter().map(|m| m.key).collect();
-            let g_keys: Vec<i64> = g.modules.iter().map(|m| m.key).collect();
-            assert_eq!(c_keys, g_keys, "module key列 mismatch [{ctx}]");
-            assert_eq!(c.link_effect, g.link_effect, "link_effect mismatch [{ctx}]");
-            assert_eq!(c.eval_link, g.eval_link, "eval_link mismatch [{ctx}]");
-            assert_eq!(c.lv6_count, g.lv6_count, "lv6_count mismatch [{ctx}]");
-            assert_eq!(c.lv5_count, g.lv5_count, "lv5_count mismatch [{ctx}]");
             assert_eq!(
-                c.selected_lv6, g.selected_lv6,
-                "selected_lv6 mismatch [{ctx}]"
+                cpu.candidate_count, gpu.candidate_count,
+                "candidate_count mismatch [{ctx_label}]"
             );
             assert_eq!(
-                c.selected_present, g.selected_present,
-                "selected_present mismatch [{ctx}]"
+                cpu.combinations, gpu.combinations,
+                "combinations mismatch [{ctx_label}]"
             );
-            assert_eq!(c.level_sum, g.level_sum, "level_sum mismatch [{ctx}]");
+            assert_eq!(
+                cpu.solutions.len(),
+                gpu.solutions.len(),
+                "solutions件数 mismatch [{ctx_label}]"
+            );
+            for (i, (c, g)) in cpu.solutions.iter().zip(gpu.solutions.iter()).enumerate() {
+                let ctx = format!("{ctx_label} rank={i}");
+                let c_keys: Vec<i64> = c.modules.iter().map(|m| m.key).collect();
+                let g_keys: Vec<i64> = g.modules.iter().map(|m| m.key).collect();
+                assert_eq!(c_keys, g_keys, "module key列 mismatch [{ctx}]");
+                assert_eq!(c.link_effect, g.link_effect, "link_effect mismatch [{ctx}]");
+                assert_eq!(c.eval_link, g.eval_link, "eval_link mismatch [{ctx}]");
+                assert_eq!(c.lv6_count, g.lv6_count, "lv6_count mismatch [{ctx}]");
+                assert_eq!(c.lv5_count, g.lv5_count, "lv5_count mismatch [{ctx}]");
+                assert_eq!(
+                    c.selected_lv6, g.selected_lv6,
+                    "selected_lv6 mismatch [{ctx}]"
+                );
+                assert_eq!(
+                    c.selected_present, g.selected_present,
+                    "selected_present mismatch [{ctx}]"
+                );
+            }
         }
     }
 
@@ -1866,8 +1991,11 @@ mod tests {
     /// 締まりすぎた admissible 違反の閾値が返る）。
     #[test]
     fn merge_topk_for_refinement_dedups_combos() {
-        fn key(level_sum: usize) -> Key {
-            (0, 0, 0, 0, level_sum, 0, Reverse(0))
+        // Link モードの並び (sel_present, sel_lv6, lv6, eval_link, lv5, -excl) を模す。
+        // このテストは merge_topk_for_refinement の重複除去ロジックのみを検証しており、
+        // Key の並び順（モード）には依存しない。
+        fn key(eval_link: i64) -> Key {
+            [0, 0, 0, eval_link, 0, 0]
         }
 
         let seed_ranked = vec![
@@ -1903,6 +2031,8 @@ mod tests {
     /// （枝刈りロジックを一切持たない最も単純な独立実装、基準として使う）を比較するのが
     /// 主力。片方が取りこぼしを起こしていれば、もう片方より劣化した結果になるはず
     /// （[`crate::optimizer::tests::bnb_pruning_on_off_same_keys`] と同じ設計思想）。
+    /// [`RankMode::Link`]/[`RankMode::Lv5`] の両方でループする（[`assert_gpu_matches_cpu`]
+    /// と同じ設計）。
     #[allow(clippy::too_many_arguments)]
     fn assert_variant_matches(
         modules: &[Module],
@@ -1915,54 +2045,58 @@ mod tests {
         variant_b: GpuVariant,
         ctx_label: &str,
     ) {
-        let a = optimize_with_opts(
-            modules,
-            selected_ids,
-            Some("all"),
-            &[],
-            soft_exclude_ids,
-            requirements,
-            top_k,
-            slot_count,
-            variant_a,
-        )
-        .unwrap_or_else(|e| panic!("{variant_a:?} failed [{ctx_label}]: {e}"));
-        let b = optimize_with_opts(
-            modules,
-            selected_ids,
-            Some("all"),
-            &[],
-            soft_exclude_ids,
-            requirements,
-            top_k,
-            slot_count,
-            variant_b,
-        )
-        .unwrap_or_else(|e| panic!("{variant_b:?} failed [{ctx_label}]: {e}"));
+        for mode in [RankMode::Link, RankMode::Lv5] {
+            let ctx_label = format!("{ctx_label} mode={mode:?}");
+            let a = optimize_with_opts(
+                modules,
+                selected_ids,
+                Some("all"),
+                &[],
+                soft_exclude_ids,
+                requirements,
+                top_k,
+                slot_count,
+                mode,
+                variant_a,
+            )
+            .unwrap_or_else(|e| panic!("{variant_a:?} failed [{ctx_label}]: {e}"));
+            let b = optimize_with_opts(
+                modules,
+                selected_ids,
+                Some("all"),
+                &[],
+                soft_exclude_ids,
+                requirements,
+                top_k,
+                slot_count,
+                mode,
+                variant_b,
+            )
+            .unwrap_or_else(|e| panic!("{variant_b:?} failed [{ctx_label}]: {e}"));
 
-        assert_eq!(
-            a.solutions.len(),
-            b.solutions.len(),
-            "solutions件数 mismatch [{ctx_label}]"
-        );
-        for (i, (x, y)) in a.solutions.iter().zip(b.solutions.iter()).enumerate() {
-            let ctx = format!("{ctx_label} rank={i}");
-            let x_keys: Vec<i64> = x.modules.iter().map(|m| m.key).collect();
-            let y_keys: Vec<i64> = y.modules.iter().map(|m| m.key).collect();
-            assert_eq!(x_keys, y_keys, "module key列 mismatch [{ctx}]");
-            assert_eq!(x.link_effect, y.link_effect, "link_effect mismatch [{ctx}]");
-            assert_eq!(x.eval_link, y.eval_link, "eval_link mismatch [{ctx}]");
-            assert_eq!(x.lv6_count, y.lv6_count, "lv6_count mismatch [{ctx}]");
-            assert_eq!(x.lv5_count, y.lv5_count, "lv5_count mismatch [{ctx}]");
             assert_eq!(
-                x.selected_lv6, y.selected_lv6,
-                "selected_lv6 mismatch [{ctx}]"
+                a.solutions.len(),
+                b.solutions.len(),
+                "solutions件数 mismatch [{ctx_label}]"
             );
-            assert_eq!(
-                x.selected_present, y.selected_present,
-                "selected_present mismatch [{ctx}]"
-            );
-            assert_eq!(x.level_sum, y.level_sum, "level_sum mismatch [{ctx}]");
+            for (i, (x, y)) in a.solutions.iter().zip(b.solutions.iter()).enumerate() {
+                let ctx = format!("{ctx_label} rank={i}");
+                let x_keys: Vec<i64> = x.modules.iter().map(|m| m.key).collect();
+                let y_keys: Vec<i64> = y.modules.iter().map(|m| m.key).collect();
+                assert_eq!(x_keys, y_keys, "module key列 mismatch [{ctx}]");
+                assert_eq!(x.link_effect, y.link_effect, "link_effect mismatch [{ctx}]");
+                assert_eq!(x.eval_link, y.eval_link, "eval_link mismatch [{ctx}]");
+                assert_eq!(x.lv6_count, y.lv6_count, "lv6_count mismatch [{ctx}]");
+                assert_eq!(x.lv5_count, y.lv5_count, "lv5_count mismatch [{ctx}]");
+                assert_eq!(
+                    x.selected_lv6, y.selected_lv6,
+                    "selected_lv6 mismatch [{ctx}]"
+                );
+                assert_eq!(
+                    x.selected_present, y.selected_present,
+                    "selected_present mismatch [{ctx}]"
+                );
+            }
         }
     }
 
@@ -2315,20 +2449,29 @@ mod tests {
         let modules = load_dump(&path);
         assert_eq!(modules.len(), 301, "データセットは301件である必要がある");
 
-        let gpu = optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5)
-            .expect("optimize failed");
-        assert_eq!(
-            gpu.engine, "cpu",
-            "n=301はMAX_N=300を超えるためCPUフォールバックするはず"
-        );
+        for mode in [RankMode::Link, RankMode::Lv5] {
+            let gpu = optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5, mode)
+                .expect("optimize failed");
+            assert_eq!(
+                gpu.engine, "cpu",
+                "n=301はMAX_N=300を超えるためCPUフォールバックするはず mode={mode:?}"
+            );
 
-        let cpu = optimizer::optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5)
-            .expect("CPU optimize failed");
-        assert_eq!(cpu.solutions.len(), gpu.solutions.len(), "solutions件数 mismatch");
-        for (i, (c, g)) in cpu.solutions.iter().zip(gpu.solutions.iter()).enumerate() {
-            let c_keys: Vec<i64> = c.modules.iter().map(|m| m.key).collect();
-            let g_keys: Vec<i64> = g.modules.iter().map(|m| m.key).collect();
-            assert_eq!(c_keys, g_keys, "module key列 mismatch rank={i}");
+            let cpu = optimizer::optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5, mode)
+                .expect("CPU optimize failed");
+            assert_eq!(
+                cpu.solutions.len(),
+                gpu.solutions.len(),
+                "solutions件数 mismatch mode={mode:?}"
+            );
+            for (i, (c, g)) in cpu.solutions.iter().zip(gpu.solutions.iter()).enumerate() {
+                let c_keys: Vec<i64> = c.modules.iter().map(|m| m.key).collect();
+                let g_keys: Vec<i64> = g.modules.iter().map(|m| m.key).collect();
+                assert_eq!(
+                    c_keys, g_keys,
+                    "module key列 mismatch mode={mode:?} rank={i}"
+                );
+            }
         }
     }
 
@@ -2359,5 +2502,4 @@ mod tests {
             }
         }
     }
-
 }
