@@ -46,6 +46,9 @@ const MAX_N: u32 = 300u;
 const CAND_BUF_LEN: u32 = MAX_N * MAX_PARTS;
 // プレフィックス長の上限（slot_count-1、slot_count<=5 なので最大4）。
 const MAX_PREFIX: u32 = 4u;
+// ランキング順序モード（optimizer_gpu.rs の rank_mode_u32 と一致させること）。
+const RANK_MODE_LINK: u32 = 0u;
+const RANK_MODE_LV5: u32 = 1u;
 
 struct CandPart {
     attr_idx: u32,
@@ -71,6 +74,7 @@ struct Params {
     threshold_lo: u32,
     chunk_start: u32,
     chunk_count: u32,
+    rank_mode: u32,
 }
 
 @group(0) @binding(0) var<storage, read> binom: array<u32>;
@@ -156,8 +160,31 @@ fn attr_suffix_max_at(a: u32, s: u32) -> i32 {
 fn w_suffix_max_at(s: u32) -> i32 {
     return suffix_max[params.n_attr * (params.n + 1u) + s];
 }
-fn g_suffix_max_at(s: u32) -> i32 {
-    return suffix_max[params.n_attr * (params.n + 1u) + (params.n + 1u) + s];
+
+struct HiLo {
+    hi: u32,
+    lo: u32,
+}
+
+// キー packing（optimizer_gpu.rs の pack_key と同じビット割当）。RankMode ごとに
+// 明示的な2分岐で実装する（汎用シフト/マスクの uniform 渡しは可読性が落ちてバグりやすく、
+// ここは静かに順序が壊れると「刈りすぎ＝最適解を無言で失う」箇所のため、分岐コストより
+// 可読性・レビュー容易性を優先する。スレッドあたり数回しか呼ばれないため分岐コストは
+// 無視できる）。Kernel P（admissible上界）と Kernel T（最終キー）の両方で共有する。
+// - RANK_MODE_LINK: hi = sel_present(6)|sel_lv6(6)|lv6(6)|eval_link(14)、
+//                   lo = lv5(16)|(0xFFFF-excl)(16)
+// - RANK_MODE_LV5 : hi = sel_present(6)|sel_lv6(6)|lv6(6)|lv5(6)|未使用(8)、
+//                   lo = eval_link(16)|(0xFFFF-excl)(16)
+fn pack_hi_lo(sel_present: u32, sel_lv6: u32, lv6: u32, lv5: u32, eval_link: u32, excl: u32) -> HiLo {
+    var result: HiLo;
+    if (params.rank_mode == RANK_MODE_LV5) {
+        result.hi = (sel_present << 26u) | (sel_lv6 << 20u) | (lv6 << 14u) | (lv5 << 8u);
+        result.lo = (eval_link << 16u) | (0xFFFFu - excl);
+    } else {
+        result.hi = (sel_present << 26u) | (sel_lv6 << 20u) | (lv6 << 14u) | eval_link;
+        result.lo = (lv5 << 16u) | (0xFFFFu - excl);
+    }
+    return result;
 }
 
 // --- Kernel P: プレフィルタ。1スレッド=1プレフィックスrank（チャンクローカル）。 ---
@@ -206,7 +233,7 @@ fn main_p(
     }
     let ub_start = prefix_last + 1u;
 
-    // --- プレフィックスの totals・7カウンタを一度だけフルスキャンで計算。 ---
+    // --- プレフィックスの totals・6カウンタを一度だけフルスキャンで計算。 ---
     var totals: array<i32, MAX_ATTR>;
     for (var a: u32 = 0u; a < MAX_ATTR; a = a + 1u) {
         totals[a] = 0;
@@ -241,7 +268,6 @@ fn main_p(
 
     var lv6: u32 = 0u;
     var lv5: u32 = 0u;
-    var level_sum: u32 = 0u;
     var eval_link: i32 = 0;
     var excl: i32 = 0;
     var sel_lv6: u32 = 0u;
@@ -254,7 +280,6 @@ fn main_p(
             continue;
         }
         let lv = level_of(v);
-        level_sum = level_sum + lv;
         eval_link = eval_link + v;
         if (lv == 6u) {
             lv6 = lv6 + 1u;
@@ -303,10 +328,10 @@ fn main_p(
             ub_lv5 = ub_lv5 + 1u;
         }
     }
-    let ub_level_sum = level_sum + u32(g_suffix_max_at(ub_start));
     let ub_eval_link = eval_link + w_suffix_max_at(ub_start);
-    let ub_hi = (ub_sel_present << 26u) | (ub_sel_lv6 << 20u) | (ub_lv6 << 14u) | (ub_lv5 << 8u) | ub_level_sum;
-    let ub_lo = (u32(ub_eval_link) << 16u) | (0xFFFFu - u32(excl));
+    let ub_hilo = pack_hi_lo(ub_sel_present, ub_sel_lv6, ub_lv6, ub_lv5, u32(ub_eval_link), u32(excl));
+    let ub_hi = ub_hilo.hi;
+    let ub_lo = ub_hilo.lo;
     // accept 判定（Kernel T）と同じ半開区間セマンティクス。上界が閾値と同点（==）の場合は
     // accept 側に倒れる（!ub_accept は false）ため、絶対に刈らない。
     let ub_accept = (ub_hi > params.threshold_hi)
@@ -381,7 +406,7 @@ fn main_t(
         return;
     }
 
-    // --- プレフィックスの totals・7カウンタを一度だけフルスキャンで計算。 ---
+    // --- プレフィックスの totals・6カウンタを一度だけフルスキャンで計算。 ---
     var totals: array<i32, MAX_ATTR>;
     for (var a: u32 = 0u; a < MAX_ATTR; a = a + 1u) {
         totals[a] = 0;
@@ -398,7 +423,6 @@ fn main_t(
 
     var lv6: u32 = 0u;
     var lv5: u32 = 0u;
-    var level_sum: u32 = 0u;
     var eval_link: i32 = 0;
     var excl: i32 = 0;
     var sel_lv6: u32 = 0u;
@@ -411,7 +435,6 @@ fn main_t(
             continue;
         }
         let lv = level_of(v);
-        level_sum = level_sum + lv;
         eval_link = eval_link + v;
         if (lv == 6u) {
             lv6 = lv6 + 1u;
@@ -428,7 +451,7 @@ fn main_t(
         }
     }
 
-    // --- 末尾候補ループ: optimizer.rs の Accum::add/remove と同じ差分更新で7カウンタを
+    // --- 末尾候補ループ: optimizer.rs の Accum::add/remove と同じ差分更新で6カウンタを
     //     増分更新する（値は非負なので add では new_lv>=old_lv、remove では
     //     cur_lv>=new_lv が常に成り立ち、u32減算がアンダーフローすることはない）。---
     for (var last: u32 = prefix_last + 1u; last < params.n; last = last + 1u) {
@@ -451,7 +474,6 @@ fn main_t(
             let old_lv = level_of(old);
             let new_lv = level_of(newv);
             if (new_lv != old_lv) {
-                level_sum = level_sum + (new_lv - old_lv);
                 if (old_lv == 6u) {
                     lv6 = lv6 - 1u;
                 }
@@ -491,9 +513,10 @@ fn main_t(
         }
 
         if (reqs_ok) {
-            // --- キー packing（optimizer_gpu.rs の pack_key と同じビット割当）・閾値比較。 ---
-            let hi = (sel_present << 26u) | (sel_lv6 << 20u) | (lv6 << 14u) | (lv5 << 8u) | level_sum;
-            let lo = (u32(eval_link) << 16u) | (0xFFFFu - u32(excl));
+            // --- キー packing・閾値比較。 ---
+            let hilo = pack_hi_lo(sel_present, sel_lv6, lv6, lv5, u32(eval_link), u32(excl));
+            let hi = hilo.hi;
+            let lo = hilo.lo;
             let accept = (hi > params.threshold_hi)
                 || (hi == params.threshold_hi && lo >= params.threshold_lo);
             if (accept) {
@@ -528,7 +551,6 @@ fn main_t(
             let cur_lv = level_of(cur);
             let new_lv = level_of(newv);
             if (cur_lv != new_lv) {
-                level_sum = level_sum - (cur_lv - new_lv);
                 if (cur_lv == 6u) {
                     lv6 = lv6 - 1u;
                 }

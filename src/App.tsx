@@ -11,6 +11,7 @@ import type {
   AttrMeta,
   AttrState,
   OptimizeResult,
+  RankMode,
   SearchPreset,
   StatusDto,
 } from "./types";
@@ -30,6 +31,15 @@ import { Footer } from "./components/Footer";
 const CATEGORIES = ["all", "attack", "guardian", "support"];
 const TOP_K_OPTIONS = [3, 5, 10];
 const SLOT_COUNT_OPTIONS = [4, 5];
+const RANK_MODE_OPTIONS: RankMode[] = ["link", "lv5"];
+
+// localStorage 由来の値は型が保証されない（壊れた値・将来バージョンの値が入りうる）。
+// RankMode は Rust 側で厳格な enum のため、不正な値をそのまま渡すと optimize コマンド全体が
+// serde デシリアライズエラーで失敗する（topK/slotCount はサーバ側で clamp されるのと対照的）。
+// 未知の値は黙って既定の "link" へフォールバックする。
+function normalizeRankMode(mode: RankMode | undefined): RankMode {
+  return mode !== undefined && RANK_MODE_OPTIONS.includes(mode) ? mode : "link";
+}
 // 新規インストール時、および slotCount 導入前の旧 lastSearch を復元した時の初期スロット数。
 // 前向きに5枠を既定にする（restored.slotCount ?? INITIAL_SLOT_COUNT）。
 const INITIAL_SLOT_COUNT = 5;
@@ -45,6 +55,7 @@ interface LastSearch {
   topK: number;
   slotCount: number;
   hardExclude: boolean;
+  rankMode: RankMode;
 }
 
 type Tab = "results" | "favorites";
@@ -84,6 +95,17 @@ export default function App() {
   // 旧データ（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
   // true にフォールバックして従来の挙動を保つ（新規保存時は必ず明示するため ?? は効かない）。
   const [hardExclude, setHardExclude] = useState<boolean>(() => restored.hardExclude ?? true);
+  // ランキング順序モード。旧データ（本機能追加前）には存在しないため "link"（既定・従来の
+  // 唯一の順序）にフォールバックする。モードを変えただけでは自動再探索しない
+  // （category/slotCount/topK と同じ既存パターン。ユーザーが「最適化を実行」を押す想定）。
+  const [rankMode, setRankMode] = useState<RankMode>(() =>
+    normalizeRankMode(restored.rankMode),
+  );
+  // 直近に成功した検索で実際に使われた並び順モード。`rankMode`（UIの現在の選択）と
+  // ずれたら「表示中の結果は選択中のモードを反映していない」ことを示すために使う
+  // （rankMode は topK/slotCount と違って見た目が変わらないため、既存パターンの
+  // 「変更だけでは再検索しない」だけでは変更が反映されていないことに気づけない）。
+  const [appliedRankMode, setAppliedRankMode] = useState<RankMode | null>(null);
   // フッター表示設定。設定画面が無いため lastSearch とは別キーで独立永続化する（既定=表示ON）。
   const [footerVisible, setFooterVisible] = useState<boolean>(() =>
     loadJSON(STORAGE_KEYS.footerVisible, true),
@@ -130,8 +152,9 @@ export default function App() {
       topK,
       slotCount,
       hardExclude,
+      rankMode,
     });
-  }, [selection, requireLevels, category, topK, slotCount, hardExclude]);
+  }, [selection, requireLevels, category, topK, slotCount, hardExclude, rankMode]);
 
   useEffect(() => {
     saveJSON(STORAGE_KEYS.footerVisible, footerVisible);
@@ -153,6 +176,7 @@ export default function App() {
       k: number,
       slots: number,
       hardExcl: boolean,
+      mode: RankMode,
     ) => {
       setError(null);
       setLoading(true);
@@ -181,9 +205,11 @@ export default function App() {
           requirements,
           topK: k,
           slotCount: slots,
+          rankMode: mode,
         });
         setElapsedMs(performance.now() - startedAt);
         setResult(res);
+        setAppliedRankMode(mode);
         if (res.solutions.length === 0) {
           setError(
             res.candidate_count < slots
@@ -205,8 +231,8 @@ export default function App() {
   );
 
   const runOptimize = useCallback(
-    () => runWith(selection, requireLevels, category, topK, slotCount, hardExclude),
-    [runWith, selection, requireLevels, category, topK, slotCount, hardExclude],
+    () => runWith(selection, requireLevels, category, topK, slotCount, hardExclude, rankMode),
+    [runWith, selection, requireLevels, category, topK, slotCount, hardExclude, rankMode],
   );
 
   useEffect(() => {
@@ -254,12 +280,12 @@ export default function App() {
     const next = { ...selection };
     delete next[id];
     setSelection(next);
-    runWith(next, requireLevels, category, topK, slotCount, hardExclude);
+    runWith(next, requireLevels, category, topK, slotCount, hardExclude, rankMode);
   };
 
   const resetCategory = () => {
     setCategory("all");
-    runWith(selection, requireLevels, "all", topK, slotCount, hardExclude);
+    runWith(selection, requireLevels, "all", topK, slotCount, hardExclude, rankMode);
   };
 
   const applyPreset = (p: SearchPreset) => {
@@ -268,18 +294,30 @@ export default function App() {
     // 旧プリセット（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
     // true にフォールバックして従来の挙動を保つ（新規保存時は常に明示される）。
     const hardExcl = p.hardExclude ?? true;
+    // 旧プリセット（案A追加前）には rankMode が無いため、従来の唯一の順序 "link" へ
+    // フォールバックする。壊れた値・未知の値も同様に "link" へ正規化する（S5）。
+    const mode = normalizeRankMode(p.rankMode);
     setSelection(p.selection);
     setRequireLevels(p.requireLevels);
     setCategory(p.category);
     setTopK(p.topK);
     setSlotCount(slots);
     setHardExclude(hardExcl);
+    setRankMode(mode);
     setTab("results");
-    runWith(p.selection, p.requireLevels, p.category, p.topK, slots, hardExcl);
+    runWith(p.selection, p.requireLevels, p.category, p.topK, slots, hardExcl, mode);
   };
 
   const savePreset = (name: string) =>
-    presets.save(name, { selection, requireLevels, category, topK, slotCount, hardExclude });
+    presets.save(name, {
+      selection,
+      requireLevels,
+      category,
+      topK,
+      slotCount,
+      hardExclude,
+      rankMode,
+    });
 
   const onReloadDump = async () => {
     setBusy(true);
@@ -299,6 +337,9 @@ export default function App() {
   const canSave =
     targetIds.length > 0 || excludeIds.length > 0 || category !== "all";
   const favCount = favorites.favorites.length;
+  // 表示中の結果が、現在選択中の並び順モードを反映していないか（W2）。
+  // 初回検索前（appliedRankMode===null）は「古い結果」自体が無いので対象外。
+  const isRankModeStale = appliedRankMode !== null && rankMode !== appliedRankMode;
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
@@ -415,6 +456,34 @@ export default function App() {
             </div>
           </section>
 
+          <section>
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+              {t("section.rankMode")}
+            </h2>
+            <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+              {RANK_MODE_OPTIONS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setRankMode(m)}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                    rankMode === m
+                      ? "bg-indigo-500 text-white shadow"
+                      : "text-slate-300 hover:bg-slate-700/60"
+                  }`}
+                >
+                  {t(`rankMode.${m}`)}
+                </button>
+              ))}
+            </div>
+            <p
+              className={`mt-1.5 text-[11px] leading-relaxed ${
+                isRankModeStale ? "text-amber-400" : "text-slate-500"
+              }`}
+            >
+              {isRankModeStale ? t("rankMode.staleHint") : t("rankMode.hint")}
+            </p>
+          </section>
+
           <button
             onClick={() => {
               setTab("results");
@@ -491,6 +560,16 @@ export default function App() {
                       candidates: result.candidate_count,
                       combos: result.combinations.toLocaleString(),
                     })}
+                    {appliedRankMode && (
+                      <span className={isRankModeStale ? "text-amber-400" : undefined}>
+                        {" "}
+                        ・
+                        {t("results.rankMode", {
+                          mode: t(`rankMode.${appliedRankMode}`),
+                        })}
+                        {isRankModeStale && t("results.rankModeStale")}
+                      </span>
+                    )}
                   </span>
                   {elapsedMs !== null && (
                     <span className="shrink-0 tabular-nums text-slate-500">

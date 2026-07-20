@@ -21,7 +21,7 @@ type Vars = Record<string, string | number>;
 const DICT: Record<Lang, Record<string, string>> = {
   ja: {
     "app.title": "BPSR モジュール最適化",
-    "app.subtitle": "Lv6を優先しリンク効果が最大になる{n}枠を探索",
+    "app.subtitle": "Lv6を優先し、選んだ並び順で最良になる{n}枠を探索",
     "status.running": "キャプチャ稼働中",
     "status.failed": "キャプチャ失敗(要管理者権限)",
     "status.waiting": "キャプチャ待機",
@@ -40,14 +40,22 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.slotCount": "スロット数",
     "section.minLv": "属性ごとの下限Lv",
     "section.topK": "表示件数",
+    "section.rankMode": "並び順",
     "run": "最適化を実行",
     "topK.option": "上位{k}",
     "slotCount.option": "{n}枠",
+    "rankMode.link": "リンク効果優先",
+    "rankMode.lv5": "Lv5数優先",
+    "rankMode.hint": "並び順を変更したら「最適化を実行」を押し直してください（自動では再検索しません）。",
+    "rankMode.staleHint":
+      "並び順を変更しました。表示中の結果は反映されていません。「最適化を実行」を押してください。",
     "tab.results": "結果",
     "tab.favorites": "お気に入り",
     "results.summary":
       "上位 {sets} セット / 候補 {candidates} 件から {combos} 通りを探索",
     "results.elapsed": "処理時間 {t}",
+    "results.rankMode": "並び順: {mode}",
+    "results.rankModeStale": "（未反映の変更あり）",
     "empty.noModulesTitle": "所持モジュール未取得",
     "empty.noModulesDesc":
       "管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）",
@@ -122,7 +130,7 @@ const DICT: Record<Lang, Record<string, string>> = {
   },
   en: {
     "app.title": "BPSR Module Optimizer",
-    "app.subtitle": "Finds the {n} slots that prioritize Lv6 and maximize link effect",
+    "app.subtitle": "Finds the {n} slots that prioritize Lv6 and rank best by your chosen order",
     "status.running": "Capturing",
     "status.failed": "Capture failed (admin required)",
     "status.waiting": "Waiting for capture",
@@ -141,14 +149,23 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.slotCount": "Slots",
     "section.minLv": "Min Lv per Attribute",
     "section.topK": "Result Count",
+    "section.rankMode": "Ranking Order",
     "run": "Run Optimization",
     "topK.option": "Top {k}",
     "slotCount.option": "{n} slots",
+    "rankMode.link": "Link Effect First",
+    "rankMode.lv5": "Lv5 Count First",
+    "rankMode.hint":
+      "After changing the order, press “Run Optimization” again (it does not re-search automatically).",
+    "rankMode.staleHint":
+      "You changed the order. The results shown don't reflect it yet — press “Run Optimization”.",
     "tab.results": "Results",
     "tab.favorites": "Favorites",
     "results.summary":
       "Top {sets} sets / searched {combos} combinations from {candidates} candidates",
     "results.elapsed": "Time {t}",
+    "results.rankMode": "Order: {mode}",
+    "results.rankModeStale": " (pending re-run)",
     "empty.noModulesTitle": "No modules captured yet",
     "empty.noModulesDesc":
       "Launch as administrator and change maps in-game to capture them (captured data is saved automatically and restored on the next launch).",

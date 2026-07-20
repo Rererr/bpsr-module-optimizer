@@ -9,18 +9,36 @@
 //! 除外は2モード:
 //! - ハード除外（`hard_exclude_ids`）: 該当属性を含むモジュールを候補から丸ごと排除。
 //! - ソフト除外（`soft_exclude_ids`）: モジュールは候補に残すが、その属性はランキング集計
-//!   （Lv6/Lv5数・レベル合計・評価リンク）から除外する。真のリンク効果（表示用）には含まれる。
+//!   （Lv6/Lv5数・評価リンク）から除外する。真のリンク効果（表示用）には含まれる。
 //!
-//! ランキング（辞書式・すべて最大化）:
+//! ランキング（辞書式・すべて最大化）は [`RankMode`] で2種類から選べる（既定は `Link`。
+//! ユーザーが選び、モード変更後は手動で再検索する。フロント側は変更しただけでは自動
+//! 再探索しない設計）:
+//!
+//! `RankMode::Link`（既定）:
 //!   1. 選択属性が結果に存在する数（Lv1以上＝値≥1）。「選んだ属性はできるだけ含める」を最優先で
 //!      表現するソフト嗜好。含められる目標は全て含み、含められない目標は黙って除外される
 //!      （目標未選択時は全解で 0 のため後続キーが従来どおり支配する）。
 //!   2. 選択属性が Lv6 到達した数（選択を優先）
 //!   3. Lv6 属性の総数（ソフト除外属性は含まない）
-//!   4. Lv5 属性の総数（ソフト除外属性は含まない）
-//!   5. 全属性レベルの合計（ソフト除外属性は含まない）
-//!   6. 評価リンク `eval_link`（ソフト除外を除いた属性値の合計）
-//!   7. ソフト除外属性値の合計 `excl` の最小化（同点タイのみで効く）
+//!   4. 評価リンク `eval_link`（ソフト除外を除いた属性値の合計）
+//!   5. Lv5 属性の総数（ソフト除外属性は含まない）
+//!   6. ソフト除外属性値の合計 `excl` の最小化（同点タイのみで効く）
+//!
+//! `RankMode::Lv5`: 成分4と5を入れ替え、Lv5 属性の総数を評価リンクより上位に置く
+//!   （Lv6 数が同点のとき、合計値より到達個数を優先したいユーザー向け）。
+//!
+//! 評価リンクを Lv5 数より上位に置く（`Link`、既定）のは、「Lv6 数が同点のとき、Lv5 到達が
+//! もう1個あるだけでリンク効果の大差がひっくり返る」という直感に反した挙動を避けるため
+//! （旧実装は Lv5 数 → 全属性レベル合計 → 評価リンク の順で、Lv5 数1個の差がリンク効果
+//! 10以上の差を覆すことがあった）。`eval_link` は選択した枠に対して線形（各モジュールの
+//! counted 値合計 `w(m)` の単純和）なので、`Link` モードでは Lv6 数が同点になった後の
+//! 順位は実質「`eval_link` 最大の組み合わせ」で決まり、`lv5` は `eval_link` まで同点だった
+//! 場合のタイブレークとしてのみ効く。これは意図した設計（個数より合計値を優先する）であり、
+//! `lv5` の存在意義を薄める副作用として認識している。`Lv5` モードは逆に個数を優先したい
+//! ユーザー向けに用意した。2つのモードは一般には互いに他方の1位を再現できない（内部で
+//! top-N を保持してフロントで並べ替える案は、必要な N がデータ依存で数百〜数千に達しうると
+//! 実測確認済みのため不成立）ので、モードごとに探索し直す設計にしている。
 //!
 //! 探索方式: C(n, slot_count) の全列挙だが、辞書式に枠を深さ優先で選び、ランキングキーを
 //! [`Accum`] で差分更新する（共有プレフィックスの再集計を避ける）。最初の枠を rayon で
@@ -36,12 +54,12 @@
 //!   埋めた場合に到達しうるキーの健全な上界」を計算する（[`should_prune`]）。TopK が既に
 //!   満杯で、この上界が現在の最劣キーを辞書式で厳密に下回るなら、その部分木は絶対に top-k を
 //!   改善できないため安全に打ち切る。各キー成分は「残り r 個を suffix から独立に楽観視」した
-//!   上界（過小評価は絶対にしない）であり、真の到達可能キー以下であることが保証される。
+//!   上界（過小評価は絶対にしない）であり、真の到達可能キー以上であることが保証される。
 //!   探索順序は並べ替え後の index 空間で行うが、TopK への投入時に元の index へ写像して
 //!   昇順ソートし直すため、combo のタイブレーク（元index昇順）と最終結果は不変。
 
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -76,16 +94,14 @@ pub(crate) struct Cand {
 }
 
 /// DFS で差分更新するランキング集計。add/remove は「触れた属性数」に比例した O(1) 相当で
-/// キー要素（選択存在数・選択Lv6数・Lv6数・Lv5数・レベル合計・評価リンク・ソフト除外合計）を保つ。
-/// 属性値は正なので add でレベルは単調増加し、level_sum の usize 減算は起きない。
-/// ソフト除外属性（`soft_excl_mask`）はレベル遷移の簿記（lv6/lv5/level_sum/sel_lv6/eval_link）
+/// キー要素（選択存在数・選択Lv6数・Lv6数・評価リンク・Lv5数・ソフト除外合計）を保つ。
+/// ソフト除外属性（`soft_excl_mask`）はレベル遷移の簿記（lv6/lv5/sel_lv6/eval_link）
 /// に一切混ぜず、`excl` にのみ値を加減算する。
 ///
 /// GPU探索（optimizer_gpu）は append バッファから読み戻した combo の厳密キー再計算に
 /// `new`/`add`/`key` を使う（`remove` は DFS の後退にのみ使うため非公開のまま）。
 pub(crate) struct Accum {
     totals: Vec<i32>,
-    level_sum: usize,
     lv6: usize,
     lv5: usize,
     sel_lv6: usize,
@@ -101,7 +117,6 @@ impl Accum {
     pub(crate) fn new(n_attr: usize) -> Self {
         Self {
             totals: vec![0; n_attr],
-            level_sum: 0,
             lv6: 0,
             lv5: 0,
             sel_lv6: 0,
@@ -124,7 +139,6 @@ impl Accum {
             let old_lv = level_of(old);
             let new_lv = level_of(new);
             if new_lv != old_lv {
-                self.level_sum += new_lv - old_lv;
                 match old_lv {
                     6 => self.lv6 -= 1,
                     5 => self.lv5 -= 1,
@@ -166,7 +180,6 @@ impl Accum {
             let cur_lv = level_of(cur);
             let new_lv = level_of(new);
             if cur_lv != new_lv {
-                self.level_sum -= cur_lv - new_lv;
                 match cur_lv {
                     6 => self.lv6 -= 1,
                     5 => self.lv5 -= 1,
@@ -196,16 +209,18 @@ impl Accum {
     }
 
     #[inline]
-    pub(crate) fn key(&self) -> Key {
-        (
-            self.sel_present,
-            self.sel_lv6,
-            self.lv6,
-            self.lv5,
-            self.level_sum,
-            self.eval_link,
-            Reverse(self.excl),
-        )
+    pub(crate) fn key(&self, mode: RankMode) -> Key {
+        let sel_present = self.sel_present as i64;
+        let sel_lv6 = self.sel_lv6 as i64;
+        let lv6 = self.lv6 as i64;
+        let lv5 = self.lv5 as i64;
+        let eval_link = self.eval_link as i64;
+        // 最小化したいので符号反転して格納する（大きいほど良い、の一様な意味を保つ）。
+        let neg_excl = -(self.excl as i64);
+        match mode {
+            RankMode::Link => [sel_present, sel_lv6, lv6, eval_link, lv5, neg_excl],
+            RankMode::Lv5 => [sel_present, sel_lv6, lv6, lv5, eval_link, neg_excl],
+        }
     }
 }
 
@@ -293,7 +308,7 @@ impl TopK {
 
 /// 値配列から suffix 上位 `r` 個和テーブル（`table[s][r]`、s=0..=n, r=0..=slot_count）を
 /// 構築する共通ヘルパー。r=0 の行は常に0（leaf・残り枠0での厳密判定と一致）。
-/// requirements 判定・B&B の各上界（W_r/G_r/属性ごとの A_{a,r}）で共有する。
+/// requirements 判定・B&B の各上界（W_r・属性ごとの A_{a,r}）で共有する。
 fn build_suffix_topr_table(values: &[i32], slot_count: usize) -> Vec<Vec<i32>> {
     let n = values.len();
     let mut table = vec![vec![0i32; slot_count + 1]; n + 1];
@@ -315,7 +330,7 @@ fn build_suffix_topr_table(values: &[i32], slot_count: usize) -> Vec<Vec<i32>> {
     table
 }
 
-/// スカラー値（モジュール1件あたりの w(m)/g(m) など）の suffix 上位r個和テーブル。
+/// スカラー値（モジュール1件あたりの counted 値合計 w(m) など）の suffix 上位r個和テーブル。
 struct SuffixSum {
     table: Vec<Vec<i32>>,
 }
@@ -383,8 +398,6 @@ struct SearchCtx<'a> {
     attr_bounds: &'a AttrBounds,
     /// W_r: 探索順 suffix の counted 値合計 `w(m)` 上位r個和（評価リンク上界に使う）。
     w_bound: &'a SuffixSum,
-    /// G_r: 探索順 suffix の counted レベル合計 `g(m)` 上位r個和（レベル合計上界に使う）。
-    g_bound: &'a SuffixSum,
     /// counted（非ソフト除外）属性の密インデックス一覧。
     counted_attr_idxs: &'a [usize],
     /// 選択（目標）属性の密インデックス一覧。
@@ -393,6 +406,8 @@ struct SearchCtx<'a> {
     use_requirement_pruning: bool,
     /// B&B 上界剪定を行うか（false なら TopK 満杯時の枝刈りを行わず全列挙する）。
     use_bnb_pruning: bool,
+    /// ランキング順序モード（[`Key`] の成分並びを決める）。
+    mode: RankMode,
 }
 
 /// 現在のノード（残り枠 `r`、次候補 index `start`、現在の集計 `acc`）から到達しうるキーの
@@ -402,84 +417,103 @@ struct SearchCtx<'a> {
 /// 各成分は「残り r 個を suffix から属性ごとに独立に楽観視」した上界であり、真の到達可能な
 /// 値以上であることが保証される（過小評価は決してしない）。層ごとに遅延評価し、上位の成分
 /// だけで大小が決まればそれ以降の成分（O(n_attr)）は計算しない。
+///
+/// 各成分の上界式自体は [`RankMode`] に依存しない（「残り r 個を独立に楽観視」という性質は
+/// 成分の並び順と無関係）。成分0〜2（選択存在数・選択Lv6数・Lv6数）は両モードで並び位置が
+/// 共通なので分岐なしで共有し、成分3・4（評価リンク上界・Lv5数上界）だけモードに応じて
+/// 比較順序を入れ替える（[`Key`]/[`Accum::key`] と同じ並び）。
 fn should_prune(acc: &Accum, ctx: &SearchCtx, start: usize, r: usize, worst: &Key) -> bool {
     let reach = |a: usize, threshold_lv: usize| -> bool {
         level_of(acc.totals[a] + ctx.attr_bounds.topr(a, start, r)) >= threshold_lv
     };
 
     // 成分0: 選択属性の存在数(Lv1到達)上界。現在不在の選択属性のうち、残り枠で値≥1に到達しうる
-    // ものを全て存在化できると楽観視する（過小評価しない健全な上界）。
+    // ものを全て存在化できると楽観視する（過小評価しない健全な上界）。両モード共通の並び位置。
     let ub_present = acc.sel_present
         + ctx
             .selected_attr_idxs
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) == 0 && reach(a, 1))
             .count();
-    match ub_present.cmp(&worst.0) {
+    match (ub_present as i64).cmp(&worst[0]) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
     }
 
-    // 成分1: 選択属性の Lv6 到達数上界。
+    // 成分1: 選択属性の Lv6 到達数上界。両モード共通の並び位置。
     let ub_sel6 = acc.sel_lv6
         + ctx
             .selected_attr_idxs
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) < 6 && reach(a, 6))
             .count();
-    match ub_sel6.cmp(&worst.1) {
+    match (ub_sel6 as i64).cmp(&worst[1]) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
     }
 
-    // 成分2: Lv6 属性総数上界（counted 属性のみ）。
+    // 成分2: Lv6 属性総数上界（counted 属性のみ）。両モード共通の並び位置。
     let ub_lv6 = acc.lv6
         + ctx
             .counted_attr_idxs
             .iter()
             .filter(|&&a| level_of(acc.totals[a]) < 6 && reach(a, 6))
             .count();
-    match ub_lv6.cmp(&worst.2) {
+    match (ub_lv6 as i64).cmp(&worst[2]) {
         Ordering::Less => return true,
         Ordering::Greater => return false,
         Ordering::Equal => {}
     }
 
-    // 成分3: Lv5 属性総数上界（counted 属性のみ）。既に Lv5 の属性は Lv6 へ抜ける可能性を
-    // 無視して現状維持を仮定し（成分2側で楽観視済み）、Lv4以下からの新規到達のみ加算する。
-    let ub_lv5 = acc.lv5
-        + ctx
-            .counted_attr_idxs
-            .iter()
-            .filter(|&&a| level_of(acc.totals[a]) <= 4 && reach(a, 5))
-            .count();
-    match ub_lv5.cmp(&worst.3) {
-        Ordering::Less => return true,
-        Ordering::Greater => return false,
-        Ordering::Equal => {}
+    // 成分3・4: 評価リンク上界（W_r）と Lv5 属性総数上界。モードにより比較順序が入れ替わる。
+    match ctx.mode {
+        RankMode::Link => {
+            let ub_lk = acc.eval_link + ctx.w_bound.topr(start, r);
+            match (ub_lk as i64).cmp(&worst[3]) {
+                Ordering::Less => return true,
+                Ordering::Greater => return false,
+                Ordering::Equal => {}
+            }
+            // 既に Lv5 の属性は Lv6 へ抜ける可能性を無視して現状維持を仮定し
+            // （成分2側で楽観視済み）、Lv4以下からの新規到達のみ加算する。
+            let ub_lv5 = acc.lv5
+                + ctx
+                    .counted_attr_idxs
+                    .iter()
+                    .filter(|&&a| level_of(acc.totals[a]) <= 4 && reach(a, 5))
+                    .count();
+            match (ub_lv5 as i64).cmp(&worst[4]) {
+                Ordering::Less => return true,
+                Ordering::Greater => return false,
+                Ordering::Equal => {}
+            }
+        }
+        RankMode::Lv5 => {
+            let ub_lv5 = acc.lv5
+                + ctx
+                    .counted_attr_idxs
+                    .iter()
+                    .filter(|&&a| level_of(acc.totals[a]) <= 4 && reach(a, 5))
+                    .count();
+            match (ub_lv5 as i64).cmp(&worst[3]) {
+                Ordering::Less => return true,
+                Ordering::Greater => return false,
+                Ordering::Equal => {}
+            }
+            let ub_lk = acc.eval_link + ctx.w_bound.topr(start, r);
+            match (ub_lk as i64).cmp(&worst[4]) {
+                Ordering::Less => return true,
+                Ordering::Greater => return false,
+                Ordering::Equal => {}
+            }
+        }
     }
 
-    // 成分4: レベル合計上界（G_r）。
-    let ub_ls = acc.level_sum + ctx.g_bound.topr(start, r) as usize;
-    match ub_ls.cmp(&worst.4) {
-        Ordering::Less => return true,
-        Ordering::Greater => return false,
-        Ordering::Equal => {}
-    }
-
-    // 成分5: 評価リンク上界（W_r）。
-    let ub_lk = acc.eval_link + ctx.w_bound.topr(start, r);
-    match ub_lk.cmp(&worst.5) {
-        Ordering::Less => return true,
-        Ordering::Greater => return false,
-        Ordering::Equal => {}
-    }
-
-    // 成分6: ソフト除外合計は残り枠で増える一方（非負値）なので、現在値がそのまま
-    // Reverse としての上界になる。
-    Reverse(acc.excl) < worst.6
+    // 成分5: ソフト除外合計は残り枠で増える一方（非負値）なので、現在値がそのまま上界になる
+    // （符号反転して格納。Accum::key と同じ規則で「大きいほど良い」に統一する）。
+    -(acc.excl as i64) < worst[5]
 }
 
 /// 残り (slot_count - depth) 枠を index `start` 以降から選ぶ再帰列挙。
@@ -520,7 +554,7 @@ fn dfs(
         // combo のタイブレークは元index昇順で行うため、探索順indexを元indexへ写像しソートする。
         let mut combo: Vec<u32> = path.iter().map(|&i| ctx.order[i as usize] as u32).collect();
         combo.sort_unstable();
-        top.offer(acc.key(), &combo);
+        top.offer(acc.key(ctx.mode), &combo);
         return;
     }
     // この深さで選べる最大インデックス（右側に残り枠分の余地を残す）。
@@ -621,8 +655,6 @@ pub struct Solution {
     pub selected_lv6: usize,
     /// 選択属性のうち結果に存在する数（Lv1以上）。ランキング最優先キーの実体。
     pub selected_present: usize,
-    /// 全属性レベルの合計（ソフト除外属性は含まない）。
-    pub level_sum: usize,
     /// 全属性の内訳（レベル降順、ソフト除外属性も含む）。
     pub breakdown: Vec<AttrBreakdown>,
 }
@@ -638,11 +670,40 @@ pub struct OptimizeResult {
     pub engine: String,
 }
 
-/// 辞書式比較キー（すべて最大化。末尾の `Reverse<i32>` はソフト除外合計の最小化）。
-/// 要素順: (選択存在数, 選択Lv6数, Lv6数, Lv5数, レベル合計, 評価リンク, Reverse(ソフト除外合計))。
+/// ランキング順序モード。ユーザーが選び、変更後は手動で再検索する（モード変更だけでは
+/// 自動再探索しない。フロント側の設計）。
+/// - `Link`（既定）: Lv6数の次に評価リンク（合計値）を優先し、Lv5数はその後に回す。
+/// - `Lv5`: Lv6数の次にLv5到達数（個数）を優先し、評価リンクはその後に回す。
+///
+/// 実測で確認済みの通り、どちらのモードで探索しても「もう一方のモードでの真の1位」を
+/// 一般には再現できない（内部でtop-Nを保持してフロントで並べ替える案は、必要なNが
+/// データ依存で数百〜数千に達するため不成立と確認済み）。そのためモードごとに探索し直す
+/// 設計を取る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RankMode {
+    #[default]
+    Link,
+    Lv5,
+}
+
+/// 辞書式比較キー（すべて最大化。要素はすべて `i64` に統一した固定長配列）。
+/// ソフト除外合計は最小化したいので、格納時点で符号を反転（`-excl`）しておくことで
+/// 単純な数値比較のまま「大きいほど良い」の一様な意味を保つ（`Reverse` ラッパー不要）。
+///
+/// 要素順は `mode`（[`RankMode`]）で変わる（[`Accum::key`] 参照）:
+/// - `Link`: (選択存在数, 選択Lv6数, Lv6数, 評価リンク, Lv5数, -ソフト除外合計)
+/// - `Lv5` : (選択存在数, 選択Lv6数, Lv6数, Lv5数, 評価リンク, -ソフト除外合計)
+///
+/// 旧実装はタプル `(usize, usize, usize, i32, usize, Reverse<i32>)` で、評価リンク/Lv5数の
+/// 型が異なることが「参照実装 `naive_ranked` が並び替えを反映し忘れる事故をコンパイル時に
+/// 防ぐガード」を兼ねていた。固定長配列化でその保証は失われるため、`naive_ranked` を
+/// 両モード対応にしたブルートフォース突き合わせ（`matches_naive_reference` 等）で
+/// テスト時に必ず担保すること。
+///
 /// GPU探索（optimizer_gpu）はシェーダ内のキー packing・CPU側の閾値比較の両方でこの並びに
 /// 依存するため pub(crate)。
-pub(crate) type Key = (usize, usize, usize, usize, usize, i32, Reverse<i32>);
+pub(crate) type Key = [i64; 6];
 
 /// 入力のバリデーション。目標属性・下限Lv指定対象が除外属性（ソフト/ハード問わず）と
 /// 重複していないかを確認する。黙って片方を優先せず、意味のあるメッセージで拒否する。
@@ -692,6 +753,7 @@ fn validate_inputs(
 /// - `hard_exclude_ids`: いずれかを含むモジュールは候補から丸ごと除外。
 /// - `soft_exclude_ids`: モジュールは候補に残すが、該当属性はランキング集計から除外する。
 /// - `requirements`: 属性ごとの下限レベル要求 `[(attr_id, min_level)]`。
+/// - `mode`: ランキング順序モード（[`RankMode`]）。
 ///
 /// 目標属性・下限Lv対象が除外属性（ソフト/ハード）と重複する場合はエラーを返す。
 #[allow(clippy::too_many_arguments)]
@@ -704,6 +766,7 @@ pub fn optimize(
     requirements: &[(i32, usize)],
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
 ) -> Result<OptimizeResult, String> {
     optimize_with_opts(
         modules,
@@ -714,6 +777,7 @@ pub fn optimize(
         requirements,
         top_k,
         slot_count,
+        mode,
         true,
         true,
     )
@@ -874,8 +938,8 @@ pub(crate) fn prepare<'a>(
 
     // B&B の探索順を決めるため、各候補の counted 値合計 w(m)（=非ソフト除外パーツの値合計）を
     // 元の候補順で求める。w(m) 降順（同点は元index昇順）に並べ替えると良い解を早く見つけやすく
-    // なり、B&B の枝刈りが早期から効く（counted レベル合計 g(m) は search_cpu 側で cands から
-    // 直接再計算する。soft_excl_mask による除外は dense idx でも元 attr_id でも同義）。
+    // なり、B&B の枝刈りが早期から効く（soft_excl_mask による除外は dense idx でも元 attr_id
+    // でも同義）。
     let w: Vec<i32> = candidates
         .iter()
         .map(|m| {
@@ -961,6 +1025,7 @@ pub(crate) fn search_cpu(
     prepared: &Prepared,
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
     use_requirement_pruning: bool,
     use_bnb_pruning: bool,
 ) -> Vec<Ranked> {
@@ -975,10 +1040,9 @@ pub(crate) fn search_cpu(
     let soft_excl_mask = &prepared.soft_excl_mask;
     let n_attr = prepared.n_attr;
 
-    // B&B の上界計算に使う counted 値合計 w(m) / counted レベル合計 g(m)（探索順）。
-    // cands は既に w(m) 降順ソート済みの密表現のため、soft_excl_mask で除外パーツを弾いて
-    // 直接再計算すれば prepare 時点の値と一致する（g(m): 閾値間隔が非減少なので「基点0からの
-    // 到達レベル」がどの属性に足しても超えないレベル増分の健全な上界になる）。
+    // B&B の上界計算に使う counted 値合計 w(m)（探索順）。cands は既に w(m) 降順ソート済みの
+    // 密表現のため、soft_excl_mask で除外パーツを弾いて直接再計算すれば prepare 時点の値と
+    // 一致する。
     let w_sorted: Vec<i32> = cands
         .iter()
         .map(|c| {
@@ -989,20 +1053,9 @@ pub(crate) fn search_cpu(
                 .sum()
         })
         .collect();
-    let g_sorted: Vec<i32> = cands
-        .iter()
-        .map(|c| {
-            c.parts
-                .iter()
-                .filter(|&&(idx, _)| !soft_excl_mask[idx as usize])
-                .map(|&(_, v)| level_of(v) as i32)
-                .sum()
-        })
-        .collect();
 
     let attr_bounds = AttrBounds::build(cands, n_attr, soft_excl_mask, slot_count);
     let w_bound = SuffixSum::build(&w_sorted, slot_count);
-    let g_bound = SuffixSum::build(&g_sorted, slot_count);
     let counted_attr_idxs: Vec<usize> = (0..n_attr).filter(|&a| !soft_excl_mask[a]).collect();
     let selected_attr_idxs: Vec<usize> = (0..n_attr).filter(|&a| selected_mask[a]).collect();
 
@@ -1016,11 +1069,11 @@ pub(crate) fn search_cpu(
         required_idxs: &prepared.required_idxs,
         attr_bounds: &attr_bounds,
         w_bound: &w_bound,
-        g_bound: &g_bound,
         counted_attr_idxs: &counted_attr_idxs,
         selected_attr_idxs: &selected_attr_idxs,
         use_requirement_pruning,
         use_bnb_pruning,
+        mode,
     };
 
     // 最初の枠を並列化。各タスクは部分木を DFS し、ローカル top-k を返す。
@@ -1089,6 +1142,7 @@ fn optimize_with_opts(
     requirements: &[(i32, usize)],
     top_k: usize,
     slot_count: usize,
+    mode: RankMode,
     use_requirement_pruning: bool,
     use_bnb_pruning: bool,
 ) -> Result<OptimizeResult, String> {
@@ -1105,6 +1159,7 @@ fn optimize_with_opts(
         &prepared,
         top_k,
         slot_count,
+        mode,
         use_requirement_pruning,
         use_bnb_pruning,
     );
@@ -1158,11 +1213,6 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
         .iter()
         .filter(|b| !b.soft_excluded && b.selected && b.level >= 1)
         .count();
-    let level_sum = breakdown
-        .iter()
-        .filter(|b| !b.soft_excluded)
-        .map(|b| b.level)
-        .sum();
     let eval_link = breakdown
         .iter()
         .filter(|b| !b.soft_excluded)
@@ -1178,7 +1228,6 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
         lv5_count,
         selected_lv6,
         selected_present,
-        level_sum,
         breakdown,
     }
 }
@@ -1215,6 +1264,22 @@ mod tests {
         assert_eq!(level_of(21), 6);
     }
 
+    /// RankMode の serde snake_case 表現がフロント側の文字列リテラルと一致することを固定する
+    /// 回帰テスト（"link"/"lv5"。TypeScript 側の型と食い違うと Tauri IPC が実行時に壊れるため）。
+    #[test]
+    fn rank_mode_serde_snake_case() {
+        assert_eq!(serde_json::to_string(&RankMode::Link).unwrap(), "\"link\"");
+        assert_eq!(serde_json::to_string(&RankMode::Lv5).unwrap(), "\"lv5\"");
+        assert_eq!(
+            serde_json::from_str::<RankMode>("\"link\"").unwrap(),
+            RankMode::Link
+        );
+        assert_eq!(
+            serde_json::from_str::<RankMode>("\"lv5\"").unwrap(),
+            RankMode::Lv5
+        );
+    }
+
     #[test]
     fn prefers_more_lv6() {
         // 2枠で attr1=20(Lv6), 別案は attr1=16(Lv5)+attr2=16(Lv5)。
@@ -1226,8 +1291,8 @@ mod tests {
             module(4, 5500103, &[(1, 8), (2, 8)]),
         ];
         // 全4枠使用: attr1=10+10+8+8=36(Lv6), attr2=8+8=16(Lv5) → lv6=1,lv5=1
-        let res =
-            optimize(&modules, &[], None, &[], &[], &[], 5, 4).expect("optimize should succeed");
+        let res = optimize(&modules, &[], None, &[], &[], &[], 5, 4, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         assert_eq!(best.lv6_count, 1);
         assert_eq!(best.lv5_count, 1);
@@ -1245,8 +1310,8 @@ mod tests {
             module(4, 5500103, &[(9, 1), (5, 20)]),
         ];
         // 全枠: attr9=22(Lv6), attr5=40(Lv6) → 両方Lv6だが選択(9)もLv6
-        let res =
-            optimize(&modules, &[9], None, &[], &[], &[], 5, 4).expect("optimize should succeed");
+        let res = optimize(&modules, &[9], None, &[], &[], &[], 5, 4, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         assert!(best.selected_lv6 >= 1);
     }
@@ -1261,12 +1326,32 @@ mod tests {
             module(4, 5500103, &[(9, 3)]),
         ];
         // 合計 12 → Lv4 のみ。attr9 を Lv6必須なら解なし。
-        let res = optimize(&modules, &[9], None, &[], &[], &[(9, 6)], 5, 4)
-            .expect("optimize should succeed");
+        let res = optimize(
+            &modules,
+            &[9],
+            None,
+            &[],
+            &[],
+            &[(9, 6)],
+            5,
+            4,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed");
         assert!(res.solutions.is_empty());
         // Lv4必須なら成立。
-        let res2 = optimize(&modules, &[9], None, &[], &[], &[(9, 4)], 5, 4)
-            .expect("optimize should succeed");
+        let res2 = optimize(
+            &modules,
+            &[9],
+            None,
+            &[],
+            &[],
+            &[(9, 4)],
+            5,
+            4,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed");
         assert_eq!(res2.solutions.len(), 1);
     }
 
@@ -1279,8 +1364,8 @@ mod tests {
             module(2, 5500103, &[(5, 20)]), // 非選択=Lv6
             module(3, 5500103, &[(6, 20)]), // 非選択=Lv6
         ];
-        let res =
-            optimize(&modules, &[9], None, &[], &[], &[], 5, 2).expect("optimize should succeed");
+        let res = optimize(&modules, &[9], None, &[], &[], &[], 5, 2, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         assert_eq!(best.selected_present, 1, "選択属性9が結果に含まれるはず");
         assert!(
@@ -1301,8 +1386,8 @@ mod tests {
             module(2, 5500103, &[(1, 5)]),
             module(3, 5500103, &[(1, 5)]),
         ];
-        let res =
-            optimize(&modules, &[999], None, &[], &[], &[], 5, 2).expect("optimize should succeed");
+        let res = optimize(&modules, &[999], None, &[], &[], &[], 5, 2, RankMode::Link)
+            .expect("optimize should succeed");
         assert!(
             !res.solutions.is_empty(),
             "含められない目標でも解は消えない"
@@ -1320,8 +1405,18 @@ mod tests {
             module(3, 5500103, &[(9, 20)]), // 目標9=Lv6
             module(4, 5500103, &[(5, 20)]), // 非選択=Lv6
         ];
-        let res = optimize(&modules, &[7, 8, 9], None, &[], &[], &[], 5, 2)
-            .expect("optimize should succeed");
+        let res = optimize(
+            &modules,
+            &[7, 8, 9],
+            None,
+            &[],
+            &[],
+            &[],
+            5,
+            2,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed");
         let best = &res.solutions[0];
         // 2枠で含められる目標の最大数は2。存在数を最優先するので rank-1 は必ず2。
         assert_eq!(
@@ -1350,8 +1445,8 @@ mod tests {
             module(6, 5500103, &[(1, 1)]),
         ];
         // 上位5モジュール(各5) → attr1=25(Lv6), link=25。6番目(1)は不採用。
-        let res =
-            optimize(&modules, &[1], None, &[], &[], &[], 5, 5).expect("optimize should succeed");
+        let res = optimize(&modules, &[1], None, &[], &[], &[], 5, 5, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         assert_eq!(best.modules.len(), 5);
         assert_eq!(best.link_effect, 25);
@@ -1364,15 +1459,15 @@ mod tests {
     fn validation_rejects_target_exclude_overlap() {
         let modules = vec![module(1, 5500103, &[(9, 5)])];
         // ハード除外と目標が重複。
-        let err =
-            optimize(&modules, &[9], None, &[9], &[], &[], 5, 4).expect_err("重複はエラーのはず");
+        let err = optimize(&modules, &[9], None, &[9], &[], &[], 5, 4, RankMode::Link)
+            .expect_err("重複はエラーのはず");
         assert!(
             err.contains('9'),
             "エラーメッセージに属性IDを含むべき: {err}"
         );
         // ソフト除外と目標が重複。
-        let err2 =
-            optimize(&modules, &[9], None, &[], &[9], &[], 5, 4).expect_err("重複はエラーのはず");
+        let err2 = optimize(&modules, &[9], None, &[], &[9], &[], 5, 4, RankMode::Link)
+            .expect_err("重複はエラーのはず");
         assert!(
             err2.contains('9'),
             "エラーメッセージに属性IDを含むべき: {err2}"
@@ -1382,8 +1477,18 @@ mod tests {
     #[test]
     fn validation_rejects_requirement_on_excluded_attr() {
         let modules = vec![module(1, 5500103, &[(9, 5)])];
-        let err = optimize(&modules, &[], None, &[], &[9], &[(9, 3)], 5, 4)
-            .expect_err("除外属性への下限Lv指定はエラーのはず");
+        let err = optimize(
+            &modules,
+            &[],
+            None,
+            &[],
+            &[9],
+            &[(9, 3)],
+            5,
+            4,
+            RankMode::Link,
+        )
+        .expect_err("除外属性への下限Lv指定はエラーのはず");
         assert!(
             err.contains('9'),
             "エラーメッセージに属性IDを含むべき: {err}"
@@ -1406,8 +1511,8 @@ mod tests {
             module(4, 5500103, &[(D, 20)]),
             module(5, 5500103, &[(E, 20)]),
         ];
-        let res =
-            optimize(&modules, &[], None, &[], &[E], &[], 5, 4).expect("optimize should succeed");
+        let res = optimize(&modules, &[], None, &[], &[E], &[], 5, 4, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         let best_keys: std::collections::BTreeSet<i64> =
             best.modules.iter().map(|m| m.key).collect();
@@ -1423,7 +1528,7 @@ mod tests {
     #[test]
     fn soft_exclude_breakdown_shows_excluded_attr_without_counting() {
         // A,B,C=Lv6, D,F=Lv5, E=Lv3（ソフト除外）が残る組み合わせを検証。
-        // E は breakdown に現れ level=3・soft_excluded=true だが、lv6/lv5/level_sum/eval_link
+        // E は breakdown に現れ level=3・soft_excluded=true だが、lv6/lv5/eval_link
         // の集計には含まれない。link_effect（真値）には含まれる。
         const A: i32 = 101;
         const B: i32 = 102;
@@ -1438,13 +1543,12 @@ mod tests {
             module(4, 5500103, &[(D, 16)]),
             module(5, 5500103, &[(F, 16), (E, 8)]),
         ];
-        let res =
-            optimize(&modules, &[], None, &[], &[E], &[], 5, 5).expect("optimize should succeed");
+        let res = optimize(&modules, &[], None, &[], &[E], &[], 5, 5, RankMode::Link)
+            .expect("optimize should succeed");
         let best = &res.solutions[0];
         assert_eq!(best.modules.len(), 5);
         assert_eq!(best.lv6_count, 3, "A,B,C の3つが実質Lv6");
         assert_eq!(best.lv5_count, 2, "D,F の2つが実質Lv5");
-        assert_eq!(best.level_sum, 6 + 6 + 6 + 5 + 5);
         assert_eq!(best.eval_link, 20 + 20 + 20 + 16 + 16);
         assert_eq!(
             best.link_effect,
@@ -1465,7 +1569,7 @@ mod tests {
     fn soft_exclude_excl_does_not_affect_counted_metrics() {
         // 「ソフト除外属性値をどのモジュールに足しても Key が増加しない（excl だけ悪化しうる）」
         // という単調性を検証する: counted 属性の寄与を揃えたまま soft-excluded 属性の値だけ
-        // 増やしても、counted 側の指標（lv6/lv5/level_sum/eval_link）は変化しない。
+        // 増やしても、counted 側の指標（lv6/lv5/eval_link）は変化しない。
         const COUNTED: i32 = 201;
         const EXCL: i32 = 202;
         let filler = |k: i64| module(k, 5500103, &[(900 + k as i32, 1)]);
@@ -1481,17 +1585,36 @@ mod tests {
             filler(3),
             filler(4),
         ];
-        let low = optimize(&modules_low, &[], None, &[], &[EXCL], &[], 5, 4)
-            .expect("optimize should succeed")
-            .solutions
-            .remove(0);
-        let high = optimize(&modules_high, &[], None, &[], &[EXCL], &[], 5, 4)
-            .expect("optimize should succeed")
-            .solutions
-            .remove(0);
+        let low = optimize(
+            &modules_low,
+            &[],
+            None,
+            &[],
+            &[EXCL],
+            &[],
+            5,
+            4,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed")
+        .solutions
+        .remove(0);
+        let high = optimize(
+            &modules_high,
+            &[],
+            None,
+            &[],
+            &[EXCL],
+            &[],
+            5,
+            4,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed")
+        .solutions
+        .remove(0);
         assert_eq!(low.lv6_count, high.lv6_count);
         assert_eq!(low.lv5_count, high.lv5_count);
-        assert_eq!(low.level_sum, high.level_sum);
         assert_eq!(
             low.eval_link, high.eval_link,
             "counted 側は excl の値に左右されない"
@@ -1559,10 +1682,30 @@ mod tests {
 
         for &slot in &[4usize, 5usize] {
             // ウォームアップ1回 + 計測1回。
-            let _ = optimize(&modules, &[2104], Some("all"), &[], &[], &[], 5, slot);
+            let _ = optimize(
+                &modules,
+                &[2104],
+                Some("all"),
+                &[],
+                &[],
+                &[],
+                5,
+                slot,
+                RankMode::Link,
+            );
             let t = Instant::now();
-            let res = optimize(&modules, &[2104], Some("all"), &[], &[], &[], 5, slot)
-                .expect("optimize should succeed");
+            let res = optimize(
+                &modules,
+                &[2104],
+                Some("all"),
+                &[],
+                &[],
+                &[],
+                5,
+                slot,
+                RankMode::Link,
+            )
+            .expect("optimize should succeed");
             let dt = t.elapsed();
             eprintln!(
                 "slot={slot} all: combos={} cand={} best_link={} elapsed={:?}",
@@ -1576,8 +1719,12 @@ mod tests {
 
     /// 参照実装: 全組み合わせをゼロから集計してキーを求め、goodness 降順で top_k キーを返す。
     /// （最適化版と同じ辞書式・combo 昇順タイブレークで比較できるよう combo も返す）
-    /// ソフト除外属性は counted 集計（lv6/lv5/level_sum/eval_link）から除き、excl に加算する。
+    /// ソフト除外属性は counted 集計（lv6/lv5/eval_link）から除き、excl に加算する。
     /// requirements（属性ごとの下限Lv要求）を満たさない組み合わせは最適化版と同じく除外する。
+    /// `mode` で成分並びを切り替える（[`Accum::key`] と同じ規則）。旧実装はタプルの型差
+    /// （eval_link: i32 / lv5: usize）が「並び替えの反映漏れ」を検出するコンパイル時ガードを
+    /// 兼ねていたが、`Key` の配列化でその保証が失われたため、両モードでこの参照実装との
+    /// ブルートフォース突き合わせを必ず回す運用にする（呼び出し側テスト参照）。
     fn naive_ranked(
         modules: &[Module],
         selected_ids: &[i32],
@@ -1585,6 +1732,7 @@ mod tests {
         requirements: &[(i32, usize)],
         slot_count: usize,
         top_k: usize,
+        mode: RankMode,
     ) -> Vec<(Key, Vec<usize>)> {
         let n = modules.len();
         let mut out: Vec<(Key, Vec<usize>)> = Vec::new();
@@ -1620,22 +1768,14 @@ mod tests {
                 }
                 continue;
             }
-            let (
-                mut lv6,
-                mut lv5,
-                mut sel_lv6,
-                mut sel_present,
-                mut level_sum,
-                mut eval_link,
-                mut excl,
-            ) = (0, 0, 0, 0usize, 0usize, 0i32, 0i32);
+            let (mut lv6, mut lv5, mut sel_lv6, mut sel_present, mut eval_link, mut excl) =
+                (0, 0, 0, 0usize, 0i32, 0i32);
             for (&id, &v) in &totals {
                 if soft_exclude_ids.contains(&id) {
                     excl += v;
                     continue;
                 }
                 let lv = level_of(v);
-                level_sum += lv;
                 eval_link += v;
                 if lv == 6 {
                     lv6 += 1;
@@ -1652,18 +1792,26 @@ mod tests {
                     }
                 }
             }
-            out.push((
-                (
-                    sel_present,
-                    sel_lv6,
-                    lv6,
-                    lv5,
-                    level_sum,
-                    eval_link,
-                    Reverse(excl),
-                ),
-                combo.clone(),
-            ));
+            let neg_excl = -(excl as i64);
+            let key: Key = match mode {
+                RankMode::Link => [
+                    sel_present as i64,
+                    sel_lv6 as i64,
+                    lv6 as i64,
+                    eval_link as i64,
+                    lv5 as i64,
+                    neg_excl,
+                ],
+                RankMode::Lv5 => [
+                    sel_present as i64,
+                    sel_lv6 as i64,
+                    lv6 as i64,
+                    lv5 as i64,
+                    eval_link as i64,
+                    neg_excl,
+                ],
+            };
+            out.push((key, combo.clone()));
             // 次の組み合わせ（辞書式）。
             let k = slot_count;
             let mut i = k;
@@ -1733,66 +1881,54 @@ mod tests {
     /// 参照実装と完全一致（キー列・選択モジュール集合とも）することを検証。
     /// B&B は解を一切消さない設計（各上界は真の到達可能キー以上）のため、k-支配則と異なり
     /// これが割れることなく完全一致するはず＝歪みゼロの証明。
+    /// [`RankMode::Link`]/[`RankMode::Lv5`] の両方で検証する（should_prune の並び替え対応が
+    /// 両モードで健全であることの最重要ゲート）。
     #[test]
     fn matches_naive_reference() {
         let modules = synth_modules(28);
         let selected = [1003, 1007, 1011];
         let soft_exclude = [1002];
-        for &slot in &[4usize, 5usize] {
-            let top_k = 12;
-            let res = optimize(
-                &modules,
-                &selected,
-                None,
-                &[],
-                &soft_exclude,
-                &[],
-                top_k,
-                slot,
-            )
-            .expect("optimize should succeed");
-            let reference = naive_ranked(&modules, &selected, &soft_exclude, &[], slot, top_k);
+        for &mode in &[RankMode::Link, RankMode::Lv5] {
+            for &slot in &[4usize, 5usize] {
+                let top_k = 12;
+                let res = optimize(
+                    &modules,
+                    &selected,
+                    None,
+                    &[],
+                    &soft_exclude,
+                    &[],
+                    top_k,
+                    slot,
+                    mode,
+                )
+                .expect("optimize should succeed");
+                let reference =
+                    naive_ranked(&modules, &selected, &soft_exclude, &[], slot, top_k, mode);
 
-            assert_eq!(res.solutions.len(), reference.len(), "解の件数 slot={slot}");
-            assert_eq!(
-                res.combinations,
-                n_choose_k(modules.len(), slot),
-                "combinations は C(n,k) と一致すべき slot={slot}"
-            );
+                assert_eq!(
+                    res.solutions.len(),
+                    reference.len(),
+                    "解の件数 mode={mode:?} slot={slot}"
+                );
+                assert_eq!(
+                    res.combinations,
+                    n_choose_k(modules.len(), slot),
+                    "combinations は C(n,k) と一致すべき mode={mode:?} slot={slot}"
+                );
 
-            for (i, (sol, (key, combo))) in res.solutions.iter().zip(reference.iter()).enumerate() {
-                // キー各要素の一致。
-                assert_eq!(
-                    sol.selected_present, key.0,
-                    "sel_present mismatch slot={slot} rank={i}"
-                );
-                assert_eq!(
-                    sol.selected_lv6, key.1,
-                    "sel_lv6 mismatch slot={slot} rank={i}"
-                );
-                assert_eq!(sol.lv6_count, key.2, "lv6 mismatch slot={slot} rank={i}");
-                assert_eq!(sol.lv5_count, key.3, "lv5 mismatch slot={slot} rank={i}");
-                assert_eq!(
-                    sol.level_sum, key.4,
-                    "level_sum mismatch slot={slot} rank={i}"
-                );
-                assert_eq!(
-                    sol.eval_link, key.5,
-                    "eval_link mismatch slot={slot} rank={i}"
-                );
-                let excl: i32 = sol
-                    .breakdown
-                    .iter()
-                    .filter(|b| b.soft_excluded)
-                    .map(|b| b.value)
-                    .sum();
-                assert_eq!(Reverse(excl), key.6, "excl mismatch slot={slot} rank={i}");
-                // 選択されたモジュール集合（key=モジュールキー）も一致。
-                let got: std::collections::BTreeSet<i64> =
-                    sol.modules.iter().map(|m| m.key).collect();
-                let want: std::collections::BTreeSet<i64> =
-                    combo.iter().map(|&c| modules[c].key).collect();
-                assert_eq!(got, want, "module set mismatch slot={slot} rank={i}");
+                for (i, (sol, (key, combo))) in
+                    res.solutions.iter().zip(reference.iter()).enumerate()
+                {
+                    assert_matches_reference(
+                        sol,
+                        key,
+                        combo,
+                        &modules,
+                        mode,
+                        &format!("mode={mode:?} slot={slot} rank={i}"),
+                    );
+                }
             }
         }
     }
@@ -1801,17 +1937,37 @@ mod tests {
     #[test]
     fn deterministic_across_runs() {
         let modules = synth_modules(40);
-        let a = optimize(&modules, &[1005], None, &[], &[], &[], 10, 5)
-            .expect("optimize should succeed");
-        let b = optimize(&modules, &[1005], None, &[], &[], &[], 10, 5)
-            .expect("optimize should succeed");
-        let keys = |r: &OptimizeResult| -> Vec<(usize, i32, Vec<i64>)> {
+        let a = optimize(
+            &modules,
+            &[1005],
+            None,
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed");
+        let b = optimize(
+            &modules,
+            &[1005],
+            None,
+            &[],
+            &[],
+            &[],
+            10,
+            5,
+            RankMode::Link,
+        )
+        .expect("optimize should succeed");
+        let keys = |r: &OptimizeResult| -> Vec<(i32, i32, Vec<i64>)> {
             r.solutions
                 .iter()
                 .map(|s| {
                     let mut ks: Vec<i64> = s.modules.iter().map(|m| m.key).collect();
                     ks.sort_unstable();
-                    (s.level_sum, s.link_effect, ks)
+                    (s.eval_link, s.link_effect, ks)
                 })
                 .collect()
         };
@@ -1827,15 +1983,15 @@ mod tests {
             module(3, 5500103, &[(1, 5)]),
             module(4, 5500103, &[(1, 5)]),
         ];
-        let res =
-            optimize(&modules, &[1], None, &[], &[], &[], 5, 5).expect("optimize should succeed");
+        let res = optimize(&modules, &[1], None, &[], &[], &[], 5, 5, RankMode::Link)
+            .expect("optimize should succeed");
         assert!(res.solutions.is_empty());
         assert_eq!(res.candidate_count, 4);
     }
 
     /// top-k のランキングキー列（sel_present..excl）を取り出す。同点タイの列挙メンバーが
     /// 変わりうる性能施策（requirements 途中剪定・k-支配則）の等価性検証に使う。
-    fn key_seq(r: &OptimizeResult) -> Vec<(usize, usize, usize, usize, usize, i32, i32)> {
+    fn key_seq(r: &OptimizeResult) -> Vec<(usize, usize, usize, i32, usize, i32)> {
         r.solutions
             .iter()
             .map(|s| {
@@ -1849,9 +2005,8 @@ mod tests {
                     s.selected_present,
                     s.selected_lv6,
                     s.lv6_count,
-                    s.lv5_count,
-                    s.level_sum,
                     s.eval_link,
+                    s.lv5_count,
                     excl,
                 )
             })
@@ -1875,6 +2030,7 @@ mod tests {
                 &requirements,
                 10,
                 slot,
+                RankMode::Link,
                 true,
                 false,
             )
@@ -1888,6 +2044,7 @@ mod tests {
                 &requirements,
                 10,
                 slot,
+                RankMode::Link,
                 false,
                 false,
             )
@@ -1917,6 +2074,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                RankMode::Link,
                 true,
                 true,
             )
@@ -1930,6 +2088,7 @@ mod tests {
                 &[],
                 10,
                 slot,
+                RankMode::Link,
                 true,
                 false,
             )
@@ -1943,26 +2102,38 @@ mod tests {
     }
 
     /// 参照実装との一致を検証する共通アサーション（キー各要素＋選択モジュール集合）。
+    /// `mode` で Key の成分並びを切り替える（[`Accum::key`]/[`naive_ranked`] と同じ規則）。
     fn assert_matches_reference(
         sol: &Solution,
         key: &Key,
         combo: &[usize],
         modules: &[Module],
+        mode: RankMode,
         ctx: &str,
     ) {
-        assert_eq!(sol.selected_present, key.0, "sel_present mismatch {ctx}");
-        assert_eq!(sol.selected_lv6, key.1, "sel_lv6 mismatch {ctx}");
-        assert_eq!(sol.lv6_count, key.2, "lv6 mismatch {ctx}");
-        assert_eq!(sol.lv5_count, key.3, "lv5 mismatch {ctx}");
-        assert_eq!(sol.level_sum, key.4, "level_sum mismatch {ctx}");
-        assert_eq!(sol.eval_link, key.5, "eval_link mismatch {ctx}");
+        assert_eq!(
+            sol.selected_present as i64, key[0],
+            "sel_present mismatch {ctx}"
+        );
+        assert_eq!(sol.selected_lv6 as i64, key[1], "sel_lv6 mismatch {ctx}");
+        assert_eq!(sol.lv6_count as i64, key[2], "lv6 mismatch {ctx}");
+        match mode {
+            RankMode::Link => {
+                assert_eq!(sol.eval_link as i64, key[3], "eval_link mismatch {ctx}");
+                assert_eq!(sol.lv5_count as i64, key[4], "lv5 mismatch {ctx}");
+            }
+            RankMode::Lv5 => {
+                assert_eq!(sol.lv5_count as i64, key[3], "lv5 mismatch {ctx}");
+                assert_eq!(sol.eval_link as i64, key[4], "eval_link mismatch {ctx}");
+            }
+        }
         let excl: i32 = sol
             .breakdown
             .iter()
             .filter(|b| b.soft_excluded)
             .map(|b| b.value)
             .sum();
-        assert_eq!(Reverse(excl), key.6, "excl mismatch {ctx}");
+        assert_eq!(-(excl as i64), key[5], "excl mismatch {ctx}");
         let got: std::collections::BTreeSet<i64> = sol.modules.iter().map(|m| m.key).collect();
         let want: std::collections::BTreeSet<i64> = combo.iter().map(|&c| modules[c].key).collect();
         assert_eq!(got, want, "module set mismatch {ctx}");
@@ -1981,64 +2152,69 @@ mod tests {
         let requirement_sets: [&[(i32, usize)]; 2] = [&[], &[(1002, 4)]];
         let top_k = 8;
 
-        for &count in &counts {
-            let modules = synth_modules(count);
-            for &selected in &selected_sets {
-                for &soft_exclude in &soft_exclude_sets {
-                    // 選択属性とソフト除外属性が重複する組み合わせは validate_inputs で
-                    // エラーになる（意味のある指定ではない）ためスキップする。
-                    if selected.iter().any(|id| soft_exclude.contains(id)) {
-                        continue;
-                    }
-                    for &requirements in &requirement_sets {
-                        if requirements
-                            .iter()
-                            .any(|&(id, lv)| lv > 0 && soft_exclude.contains(&id))
-                        {
+        for &mode in &[RankMode::Link, RankMode::Lv5] {
+            for &count in &counts {
+                let modules = synth_modules(count);
+                for &selected in &selected_sets {
+                    for &soft_exclude in &soft_exclude_sets {
+                        // 選択属性とソフト除外属性が重複する組み合わせは validate_inputs で
+                        // エラーになる（意味のある指定ではない）ためスキップする。
+                        if selected.iter().any(|id| soft_exclude.contains(id)) {
                             continue;
                         }
-                        for &slot in &[4usize, 5usize] {
-                            let res = optimize_with_opts(
-                                &modules,
-                                selected,
-                                None,
-                                &[],
-                                soft_exclude,
-                                requirements,
-                                top_k,
-                                slot,
-                                true,
-                                true,
-                            )
-                            .unwrap_or_else(|e| panic!("optimize failed: {e}"));
-                            let reference = naive_ranked(
-                                &modules,
-                                selected,
-                                soft_exclude,
-                                requirements,
-                                slot,
-                                top_k,
-                            );
-
-                            let ctx = format!(
-                                "count={count} slot={slot} selected={selected:?} \
-                                 soft_exclude={soft_exclude:?} requirements={requirements:?}"
-                            );
-                            assert_eq!(
-                                res.solutions.len(),
-                                reference.len(),
-                                "解の件数不一致 {ctx}"
-                            );
-                            for (i, (sol, (key, combo))) in
-                                res.solutions.iter().zip(reference.iter()).enumerate()
+                        for &requirements in &requirement_sets {
+                            if requirements
+                                .iter()
+                                .any(|&(id, lv)| lv > 0 && soft_exclude.contains(&id))
                             {
-                                assert_matches_reference(
-                                    sol,
-                                    key,
-                                    combo,
+                                continue;
+                            }
+                            for &slot in &[4usize, 5usize] {
+                                let res = optimize_with_opts(
                                     &modules,
-                                    &format!("{ctx} rank={i}"),
+                                    selected,
+                                    None,
+                                    &[],
+                                    soft_exclude,
+                                    requirements,
+                                    top_k,
+                                    slot,
+                                    mode,
+                                    true,
+                                    true,
+                                )
+                                .unwrap_or_else(|e| panic!("optimize failed: {e}"));
+                                let reference = naive_ranked(
+                                    &modules,
+                                    selected,
+                                    soft_exclude,
+                                    requirements,
+                                    slot,
+                                    top_k,
+                                    mode,
                                 );
+
+                                let ctx = format!(
+                                    "mode={mode:?} count={count} slot={slot} selected={selected:?} \
+                                     soft_exclude={soft_exclude:?} requirements={requirements:?}"
+                                );
+                                assert_eq!(
+                                    res.solutions.len(),
+                                    reference.len(),
+                                    "解の件数不一致 {ctx}"
+                                );
+                                for (i, (sol, (key, combo))) in
+                                    res.solutions.iter().zip(reference.iter()).enumerate()
+                                {
+                                    assert_matches_reference(
+                                        sol,
+                                        key,
+                                        combo,
+                                        &modules,
+                                        mode,
+                                        &format!("{ctx} rank={i}"),
+                                    );
+                                }
                             }
                         }
                     }
@@ -2055,33 +2231,175 @@ mod tests {
         let selected = [1004, 1011];
         let soft_exclude = [1002];
         let requirements = [(1004, 1usize)];
-        for &slot in &[4usize, 5usize] {
-            let res = optimize(
-                &modules,
-                &selected,
-                None,
-                &[],
-                &soft_exclude,
-                &requirements,
-                5,
-                slot,
-            )
-            .expect("optimize should succeed");
-            let reference =
-                naive_ranked(&modules, &selected, &soft_exclude, &requirements, slot, 5);
-            assert!(!res.solutions.is_empty(), "解が存在するはず slot={slot}");
-            assert!(
-                !reference.is_empty(),
-                "参照実装にも解が存在するはず slot={slot}"
-            );
-            let (key, combo) = &reference[0];
-            assert_matches_reference(
-                &res.solutions[0],
-                key,
-                combo,
-                &modules,
-                &format!("rank-1 slot={slot}"),
-            );
+        for &mode in &[RankMode::Link, RankMode::Lv5] {
+            for &slot in &[4usize, 5usize] {
+                let res = optimize(
+                    &modules,
+                    &selected,
+                    None,
+                    &[],
+                    &soft_exclude,
+                    &requirements,
+                    5,
+                    slot,
+                    mode,
+                )
+                .expect("optimize should succeed");
+                let reference = naive_ranked(
+                    &modules,
+                    &selected,
+                    &soft_exclude,
+                    &requirements,
+                    slot,
+                    5,
+                    mode,
+                );
+                assert!(
+                    !res.solutions.is_empty(),
+                    "解が存在するはず mode={mode:?} slot={slot}"
+                );
+                assert!(
+                    !reference.is_empty(),
+                    "参照実装にも解が存在するはず mode={mode:?} slot={slot}"
+                );
+                let (key, combo) = &reference[0];
+                assert_matches_reference(
+                    &res.solutions[0],
+                    key,
+                    combo,
+                    &modules,
+                    mode,
+                    &format!("rank-1 mode={mode:?} slot={slot}"),
+                );
+            }
+        }
+    }
+
+    /// attrs.rs の実属性IDを使った合成データ（決定的LCG、seed を変えて複数パターン生成）。
+    /// 値1〜10、1モジュールあたり2〜3属性。属性IDは attrs.rs の実データから抜粋
+    /// （Basic/Combat/Resist/Focus/Ultra の各グループを横断）。
+    fn synth_modules_real_attrs(count: usize, seed: u64) -> Vec<Module> {
+        // attrs.rs (ATTRS) より抜粋: 筋力強化/特攻ダメージ強化/魔法耐性/集中・会心/
+        // 極・ダメージ増強/極・HP凝縮。
+        const REAL_ATTR_IDS: [i32; 6] = [1110, 1113, 1307, 1409, 2104, 2204];
+        let mut s = seed;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        (0..count)
+            .map(|k| {
+                let n_parts = 2 + (next() % 2) as usize; // 2 or 3
+                let parts = (0..n_parts)
+                    .map(|_| {
+                        let attr_id = REAL_ATTR_IDS[(next() % REAL_ATTR_IDS.len() as u64) as usize];
+                        let value = 1 + (next() % 10) as i32; // 1..=10
+                        Part {
+                            attr_id,
+                            attr_name: crate::attrs::attr_name(attr_id).unwrap_or("?").to_string(),
+                            value,
+                        }
+                    })
+                    .collect();
+                module_with_parts(k as i64, 5500103, parts)
+            })
+            .collect()
+    }
+
+    /// 【実データ寄り検証】属性IDを attrs.rs の実データから取り、値域(1〜10)・パーツ数(2〜3)も
+    /// 実データに近づけた合成データで、複数 seed × n=18/22 × 選択属性/ソフト除外/requirements の
+    /// 有無バリエーション × slot=4/5 を全数列挙参照実装と突き合わせる。
+    /// branch_and_bound_matches_naive_exhaustively は合成属性ID(1000+)・値1〜9でより広く
+    /// 総当たりしているが、こちらは実際の属性ID空間・値域・seedを変えても上界計算が
+    /// 過小評価しない（＝解を刈らない）ことを別データ分布で追加確認する。
+    #[test]
+    fn branch_and_bound_matches_naive_with_real_attr_ids() {
+        const SEL_A: i32 = 1113; // 特攻ダメージ強化
+        const SEL_B: i32 = 2104; // 極・ダメージ増強
+        const SEL_C: i32 = 1110; // 筋力強化
+        const SOFT_EXCL: i32 = 1307; // 魔法耐性
+        const REQ_ATTR: i32 = 1409; // 集中・会心
+
+        // (選択属性, ソフト除外属性, requirements) の組み合わせ。
+        // 「選択あり/なし」「ソフト除外あり」「requirements あり」の各単独バリエーションと、
+        // それらを同時に使う組み合わせをカバーする。
+        type Scenario<'a> = (&'a [i32], &'a [i32], &'a [(i32, usize)]);
+        let scenarios: [Scenario; 5] = [
+            (&[], &[], &[]),
+            (&[SEL_A, SEL_B], &[], &[]),
+            (&[], &[SOFT_EXCL], &[]),
+            (&[], &[], &[(REQ_ATTR, 3)]),
+            (&[SEL_C, SEL_B], &[SOFT_EXCL], &[(REQ_ATTR, 2)]),
+        ];
+
+        // seed を変えた複数ケース（属性値の分布が変わっても上界剪定が解を取りこぼさないことを見る）。
+        let seeds: [u64; 3] = [
+            0x1234_5678_9ABC_DEF0,
+            0xDEAD_BEEF_CAFE_F00D,
+            0x0BAD_C0DE_1337_BEEF,
+        ];
+        let counts = [18usize, 22]; // C(22,5)=26,334 まで（組合せ爆発しない範囲）。
+        let top_k = 8;
+
+        for &mode in &[RankMode::Link, RankMode::Lv5] {
+            for &count in &counts {
+                for &seed in &seeds {
+                    let modules = synth_modules_real_attrs(count, seed);
+                    for &(selected, soft_exclude, requirements) in &scenarios {
+                        for &slot in &[4usize, 5usize] {
+                            let res = optimize(
+                                &modules,
+                                selected,
+                                None,
+                                &[],
+                                soft_exclude,
+                                requirements,
+                                top_k,
+                                slot,
+                                mode,
+                            )
+                            .unwrap_or_else(|e| panic!("optimize failed: {e}"));
+                            let reference = naive_ranked(
+                                &modules,
+                                selected,
+                                soft_exclude,
+                                requirements,
+                                slot,
+                                top_k,
+                                mode,
+                            );
+
+                            let ctx = format!(
+                                "mode={mode:?} count={count} seed={seed:#x} slot={slot} \
+                                 selected={selected:?} soft_exclude={soft_exclude:?} \
+                                 requirements={requirements:?}"
+                            );
+                            assert_eq!(
+                                res.solutions.len(),
+                                reference.len(),
+                                "解の件数不一致 {ctx}"
+                            );
+                            // TopK 全体のKey列（トップ1に限らず）を全て突き合わせる。search_cpu と
+                            // naive_ranked は同じ goodness 降順・combo 昇順タイブレークで並べるため、
+                            // 同点解でも順序を含めて一致するはず（順序差が出ればここで検出できる）。
+                            for (i, (sol, (key, combo))) in
+                                res.solutions.iter().zip(reference.iter()).enumerate()
+                            {
+                                assert_matches_reference(
+                                    sol,
+                                    key,
+                                    combo,
+                                    &modules,
+                                    mode,
+                                    &format!("{ctx} rank={i}"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

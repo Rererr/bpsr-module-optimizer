@@ -99,15 +99,32 @@ How to bypass:
 
 ## Optimization criteria
 
-Candidate combinations are compared in the following priority order:
+Candidate combinations are compared in the following priority order (items 4/5 show the default
+"Link Effect First" order):
 
-1. The number of selected target attributes that reached Lv6
-2. The total number of Lv6 attributes
-3. The total number of Lv5 attributes
-4. The sum of all attribute levels
-5. Link effect (the sum of all attribute values)
+1. The number of selected target attributes present in the result (reaching Lv1 or higher)
+2. The number of selected target attributes that reached Lv6
+3. The total number of Lv6 attributes
+4. The sum of attribute values (excluding values of soft-excluded attributes)
+5. The total number of Lv5 attributes
+6. The smallness of the sum of excluded attributes' values
+
+When the Lv6 count is tied, the sum of attribute values (link effect) is compared before the Lv5
+count. This avoids the counterintuitive result where having just one more Lv5 attribute would flip
+a large difference in the sum of attribute values.
+
+The "Ranking Order" selector in the sidebar can swap items 4 and 5 to a **Lv5 Count First** order
+instead (for when you'd rather prioritize the number of Lv5 attributes over the sum of attribute
+values whenever the Lv6 count is tied). **Switching the order does not automatically re-search —
+press "Run Optimization" again after changing it.** The two orders generally can't reproduce each
+other's top result (a combination that never appears near the top under one order can be the #1
+result under the other), so each order needs its own search.
 
 An attribute's level is treated as Lv1–Lv6 as its total attribute value reaches `1 / 4 / 8 / 12 / 16 / 20`.
+
+- Target attributes get a soft "include if possible" preference. If a target can't be included, it is silently dropped (only a target with a minimum-level requirement becomes a hard condition that excludes combinations failing to meet it).
+- By default, excluding an attribute is a **soft exclude**: it is dropped from scoring only, and modules containing that attribute can still be used (in that case, combinations with a smaller sum of excluded attribute values are preferred). Enabling "fully exclude" (hard exclude) removes any module containing the excluded attribute from the candidates.
+- The "Link Effect" shown on a card is the actual total including values of excluded attributes (it can differ from the scoring value in item 4 above only when exclusions are set).
 
 ## Loading a JSON dump
 

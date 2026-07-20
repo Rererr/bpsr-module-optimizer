@@ -73,8 +73,8 @@ export function AttributePicker({
             <span className="text-rose-300">除外</span> → 解除 と切替。
             <span className="text-emerald-300">目標</span>はLv6到達を優先、
             <span className="text-rose-300">除外</span>は既定でソフト除外
-            （その属性はスコア評価から除外＝Lv6/Lv5数やレベル合計に数えません。同点になった
-            場合のみ、巻き添えの少ない方を優先します）。下の切替でハード除外
+            （その属性はスコア評価から除外＝Lv6/Lv5数やリンク効果の集計に数えません。同点に
+            なった場合のみ、巻き添えの少ない方を優先します）。下の切替でハード除外
             （その属性を含むモジュールを一切使わない）に変更できます。
           </>
         ) : (
@@ -84,7 +84,7 @@ export function AttributePicker({
             <span className="text-emerald-300">Target</span> prioritizes reaching Lv6;{" "}
             <span className="text-rose-300">Exclude</span> defaults to a soft exclude (that
             attribute is dropped from scoring — not counted toward Lv6/Lv5 counts or the
-            level total. Only when tied does it prefer the option with less of that
+            link-effect total. Only when tied does it prefer the option with less of that
             attribute as a side effect). Use the toggle below for a hard exclude (never use
             modules containing that attribute).
           </>

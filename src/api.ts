@@ -1,7 +1,7 @@
 // Tauri コマンドの薄いラッパ。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { AttrMeta, Module, OptimizeResult, StatusDto } from "./types";
+import type { AttrMeta, Module, OptimizeResult, RankMode, StatusDto } from "./types";
 
 export function getModules(): Promise<Module[]> {
   return invoke<Module[]>("get_modules");
@@ -27,6 +27,8 @@ export interface OptimizeArgs {
   topK: number;
   /// 装備枠数（4 または 5）。
   slotCount: number;
+  /// ランキング順序モード。
+  rankMode: RankMode;
 }
 
 export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
@@ -38,6 +40,7 @@ export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
     requirements: args.requirements,
     topK: args.topK,
     slotCount: args.slotCount,
+    rankMode: args.rankMode,
   });
 }
 
