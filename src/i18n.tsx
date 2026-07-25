@@ -66,8 +66,6 @@ const DICT: Record<Lang, Record<string, string>> = {
     "error.noReqMatch":
       "指定した下限Lvをすべて満たす組み合わせがありません（下限を下げるか属性を減らしてください）",
     "error.noMatch": "条件に合う組み合わせがありません",
-    "picker.target": "目標",
-    "picker.exclude": "除外",
     "picker.targetN": "目標 {n}",
     "picker.excludeN": "除外 {n}",
     "picker.clear": "クリア",
@@ -96,6 +94,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.favAdd": "お気に入りに追加",
     "fav.emptyTitle": "お気に入りのビルドはまだありません",
     "fav.emptyDesc": "結果カードの ★ を押すと、ここに構成を保存できます",
+    "fav.namePrefix": "ビルド",
     "fav.compareN": "{n}件を比較",
     "fav.clearSel": "選択解除",
     "fav.compareHint": "カードの「比較」で2〜3件を選択",
@@ -178,8 +177,6 @@ const DICT: Record<Lang, Record<string, string>> = {
     "error.noReqMatch":
       "No combination satisfies all the specified minimum levels (lower them or reduce attributes).",
     "error.noMatch": "No combination matches the conditions.",
-    "picker.target": "Target",
-    "picker.exclude": "Exclude",
     "picker.targetN": "Target {n}",
     "picker.excludeN": "Exclude {n}",
     "picker.clear": "Clear",
@@ -208,6 +205,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.favAdd": "Add to favorites",
     "fav.emptyTitle": "No favorite builds yet",
     "fav.emptyDesc": "Press the ★ on a result card to save a build here.",
+    "fav.namePrefix": "Build",
     "fav.compareN": "Compare {n}",
     "fav.clearSel": "Clear selection",
     "fav.compareHint": "Select 2–3 with the “Compare” checkbox",

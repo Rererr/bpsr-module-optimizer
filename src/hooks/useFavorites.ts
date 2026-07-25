@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SavedBuild, Solution } from "../types";
 import { STORAGE_KEYS, loadJSON, saveJSON } from "../storage";
+import { useI18n } from "../i18n";
 
 /** ビルド構成の同一性キー。モジュール uuid を昇順連結（枠数非依存・順序非依存）。 */
 export function buildIdOf(solution: Solution): string {
@@ -11,10 +12,11 @@ export function buildIdOf(solution: Solution): string {
 }
 
 // 既定のビルド名（保存時刻ベース）。後からユーザーが変更できる。
-function defaultName(): string {
+// 接頭辞は表示言語に追従させる（保存済みの名前はユーザーの持ち物なので後から書き換えない）。
+function defaultName(prefix: string): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
-  return `ビルド ${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${prefix} ${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 export interface UseFavorites {
@@ -28,6 +30,7 @@ export interface UseFavorites {
 
 /** お気に入りビルドの一覧と CRUD。localStorage に永続化する。 */
 export function useFavorites(): UseFavorites {
+  const { t } = useI18n();
   const [favorites, setFavorites] = useState<SavedBuild[]>(() =>
     loadJSON<SavedBuild[]>(STORAGE_KEYS.favorites, []),
   );
@@ -43,21 +46,30 @@ export function useFavorites(): UseFavorites {
     [ids],
   );
 
-  const toggle = useCallback((solution: Solution) => {
+  const toggle = useCallback(
+    (solution: Solution) => {
     const id = buildIdOf(solution);
     // 目標属性は解（存在した目標＝breakdown.selected かつ level>=1）から復元し、スナップショットと
     // 整合させる。level ガードにより保存 targetIds 数 === selected_present が構造的に保証される。
-    const targetIds = solution.breakdown
-      .filter((b) => b.selected && b.level >= 1)
-      .map((b) => b.attr_id);
-    setFavorites((prev) => {
-      if (prev.some((f) => f.id === id)) return prev.filter((f) => f.id !== id);
-      return [
-        ...prev,
-        { id, name: defaultName(), solution, targetIds, savedAt: Date.now() },
-      ];
-    });
-  }, []);
+      const targetIds = solution.breakdown
+        .filter((b) => b.selected && b.level >= 1)
+        .map((b) => b.attr_id);
+      setFavorites((prev) => {
+        if (prev.some((f) => f.id === id)) return prev.filter((f) => f.id !== id);
+        return [
+          ...prev,
+          {
+            id,
+            name: defaultName(t("fav.namePrefix")),
+            solution,
+            targetIds,
+            savedAt: Date.now(),
+          },
+        ];
+      });
+    },
+    [t],
+  );
 
   const rename = useCallback((id: string, name: string) => {
     const trimmed = name.trim();
