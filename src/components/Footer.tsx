@@ -36,7 +36,9 @@ export function Footer({ onHide }: Props) {
   const handleReport = () => openExternal(GITHUB_ISSUE_URL, t("footer.reportGithub"));
 
   return (
-    <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-800 bg-slate-900/60 px-5 py-1 text-xs opacity-50">
+    // 以前は footer 全体を opacity-50 で沈めていたが、リンク文字のコントラストが
+    // 3:1 を切って読めなかった。不透明のまま、色（slate-400）で控えめさを出す。
+    <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-800 bg-slate-900/60 px-5 py-1.5 text-xs text-slate-400">
       <button
         onClick={handleReport}
         className="text-slate-300 underline-offset-2 hover:text-slate-100 hover:underline"

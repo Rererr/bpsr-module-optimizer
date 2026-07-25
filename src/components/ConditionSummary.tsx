@@ -35,17 +35,17 @@ export function ConditionSummary({
 
   return (
     <div className="mb-2 flex flex-wrap items-center gap-1.5">
-      <span className="text-[11px] text-slate-500">{t("cond.label")}</span>
+      <span className="flex h-7 items-center text-xs text-slate-400">{t("cond.label")}</span>
 
       {targets.map((id) => {
         const lv = requireLevels[id] ?? 0;
         return (
           <span
             key={`t${id}`}
-            className="flex items-center gap-1 rounded-full border border-emerald-500/50 bg-emerald-500/10 py-0.5 pl-2 pr-1 text-[11px] text-emerald-200"
+            className="flex h-7 items-center gap-1 rounded-full border border-emerald-500/50 bg-emerald-500/10 pl-2.5 pr-1 text-xs text-emerald-200"
           >
             {nameOf(id)}
-            {lv > 0 && <span className="text-emerald-400/80">Lv≥{lv}</span>}
+            {lv > 0 && <span className="text-emerald-300">Lv≥{lv}</span>}
             <button
               onClick={() => onRemoveAttr(id)}
               aria-label={t("cond.removeTarget", { name: nameOf(id) })}
@@ -61,7 +61,7 @@ export function ConditionSummary({
       {excludes.map((id) => (
         <span
           key={`e${id}`}
-          className="flex items-center gap-1 rounded-full border border-rose-500/50 bg-rose-500/10 py-0.5 pl-2 pr-1 text-[11px] text-rose-300"
+          className="flex h-7 items-center gap-1 rounded-full border border-rose-500/50 bg-rose-500/10 pl-2.5 pr-1 text-xs text-rose-300"
         >
           <span className="line-through">{nameOf(id)}</span>
           <button
@@ -76,7 +76,7 @@ export function ConditionSummary({
       ))}
 
       {hasCategory && (
-        <span className="flex items-center gap-1 rounded-full border border-indigo-500/50 bg-indigo-500/10 py-0.5 pl-2 pr-1 text-[11px] text-indigo-200">
+        <span className="flex h-7 items-center gap-1 rounded-full border border-indigo-500/50 bg-indigo-500/10 pl-2.5 pr-1 text-xs text-indigo-200">
           {categoryLabel(category)}
           <button
             onClick={onResetCategory}

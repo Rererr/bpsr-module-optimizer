@@ -53,7 +53,7 @@ export function BuildCompare({ builds, onClose }: Props) {
 
   const cols = `minmax(84px,0.7fr) repeat(${builds.length}, minmax(0,1fr))`;
   const cell = "border-b border-slate-800 px-2 py-1.5";
-  const label = `${cell} text-[11px] text-slate-400`;
+  const label = `${cell} text-xs text-slate-400`;
 
   const metric = (
     key: string,
@@ -93,7 +93,7 @@ export function BuildCompare({ builds, onClose }: Props) {
         </h3>
         <button
           onClick={onClose}
-          className="flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:bg-slate-800"
+          className="flex h-8 items-center gap-1 rounded-md border border-slate-700 px-3 text-xs text-slate-300 transition hover:bg-slate-800"
         >
           <X size={13} />
           {t("common.close")}
@@ -109,7 +109,7 @@ export function BuildCompare({ builds, onClose }: Props) {
           }}
         >
         {/* ヘッダ行: 名前 + 指紋 */}
-        <div className={`${cell} text-[11px] text-slate-500`} />
+        <div className={`${cell} text-xs text-slate-400`} />
         {builds.map((b, i) => (
           <div key={`h-${i}`} className={`${cell} flex flex-col gap-1`}>
             <span className="truncate text-xs font-semibold text-slate-100" title={b.name}>
@@ -144,7 +144,7 @@ export function BuildCompare({ builds, onClose }: Props) {
                   >
                     <span className="flex items-center gap-1.5">
                       <span
-                        className={`text-[10px] tabular-nums ${
+                        className={`text-[12px] tabular-nums ${
                           win ? "font-semibold text-emerald-300" : "text-slate-400"
                         }`}
                       >
@@ -152,7 +152,7 @@ export function BuildCompare({ builds, onClose }: Props) {
                       </span>
                       <CompareDots level={lv} />
                     </span>
-                    <span className="flex items-center gap-0.5 text-[11px] tabular-nums text-slate-300">
+                    <span className="flex items-center gap-0.5 text-xs tabular-nums text-slate-300">
                       {bd?.value ?? 0}
                       {win && <ArrowUp size={10} className="text-emerald-400" />}
                     </span>

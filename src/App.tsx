@@ -354,9 +354,10 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         {/* 左サイドバー: 条件設定 */}
-        <aside className="flex w-[360px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-slate-800 bg-slate-900/30 p-5">
+        {/* 文字サイズを一段上げたぶん、属性チップの折返しが増えないよう幅も少し広げる。 */}
+        <aside className="flex w-[384px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-slate-800 bg-slate-900/30 p-5">
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.presets")}
             </h2>
             <PresetBar
@@ -369,7 +370,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.attributes")}
             </h2>
             <AttributePicker
@@ -383,7 +384,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.category")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
@@ -391,7 +392,7 @@ export default function App() {
                 <button
                   key={c}
                   onClick={() => setCategory(c)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
                     category === c
                       ? "bg-indigo-500 text-white shadow"
                       : "text-slate-300 hover:bg-slate-700/60"
@@ -404,7 +405,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.slotCount")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
@@ -412,7 +413,7 @@ export default function App() {
                 <button
                   key={s}
                   onClick={() => setSlotCount(s)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
                     slotCount === s
                       ? "bg-indigo-500 text-white shadow"
                       : "text-slate-300 hover:bg-slate-700/60"
@@ -425,7 +426,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.minLv")}
             </h2>
             <RequirementList
@@ -436,7 +437,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.topK")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
@@ -444,7 +445,7 @@ export default function App() {
                 <button
                   key={k}
                   onClick={() => setTopK(k)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
                     topK === k
                       ? "bg-indigo-500 text-white shadow"
                       : "text-slate-300 hover:bg-slate-700/60"
@@ -457,7 +458,7 @@ export default function App() {
           </section>
 
           <section>
-            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.rankMode")}
             </h2>
             <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
@@ -465,7 +466,7 @@ export default function App() {
                 <button
                   key={m}
                   onClick={() => setRankMode(m)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
                     rankMode === m
                       ? "bg-indigo-500 text-white shadow"
                       : "text-slate-300 hover:bg-slate-700/60"
@@ -476,8 +477,8 @@ export default function App() {
               ))}
             </div>
             <p
-              className={`mt-1.5 text-[11px] leading-relaxed ${
-                isRankModeStale ? "text-amber-400" : "text-slate-500"
+              className={`mt-1.5 text-xs leading-relaxed ${
+                isRankModeStale ? "text-amber-400" : "text-slate-400"
               }`}
             >
               {isRankModeStale ? t("rankMode.staleHint") : t("rankMode.hint")}
@@ -490,7 +491,7 @@ export default function App() {
               runOptimize();
             }}
             disabled={loading || noModules}
-            className="mt-auto flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+            className="mt-auto flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:shadow-none"
           >
             {loading ? (
               <Loader2 size={16} className="animate-spin" />
@@ -506,7 +507,7 @@ export default function App() {
           <div className="mb-3 flex items-center gap-1 rounded-lg bg-slate-800/60 p-1 w-fit">
             <button
               onClick={() => setTab("results")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`flex h-8 w-[128px] items-center justify-center rounded-md text-xs font-medium transition ${
                 tab === "results"
                   ? "bg-indigo-500 text-white shadow"
                   : "text-slate-300 hover:bg-slate-700/60"
@@ -516,7 +517,7 @@ export default function App() {
             </button>
             <button
               onClick={() => setTab("favorites")}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`flex h-8 w-[128px] items-center justify-center gap-1.5 rounded-md text-xs font-medium transition ${
                 tab === "favorites"
                   ? "bg-indigo-500 text-white shadow"
                   : "text-slate-300 hover:bg-slate-700/60"
@@ -528,7 +529,7 @@ export default function App() {
               />
               {t("tab.favorites")}
               {favCount > 0 && (
-                <span className="rounded-full bg-slate-900/60 px-1.5 text-[10px] tabular-nums">
+                <span className="rounded-full bg-slate-900/60 px-1.5 text-[12px] tabular-nums">
                   {favCount}
                 </span>
               )}
@@ -572,7 +573,7 @@ export default function App() {
                     )}
                   </span>
                   {elapsedMs !== null && (
-                    <span className="shrink-0 tabular-nums text-slate-500">
+                    <span className="shrink-0 tabular-nums text-slate-400">
                       {t("results.elapsed", { t: formatElapsed(elapsedMs) })}{" "}
                       {formatEngine(result.engine)}
                     </span>
@@ -596,7 +597,7 @@ export default function App() {
                 </div>
               ) : (
                 !error && (
-                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-500">
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-400">
                     <PackageOpen size={48} className="opacity-40" />
                     {noModules ? (
                       <div>

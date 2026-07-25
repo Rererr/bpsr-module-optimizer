@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* 情報密度は保ちつつ可読性を上げるため、Tailwind の小さいサイズ段だけを一段引き上げる。
+   text-xs=13px / text-sm=15px / text-base=16.5px。行間も本文寄りに広げる。 */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: calc(1.125 / 0.8125);
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: calc(1.375 / 0.9375);
+  --text-base: 1.03125rem;
+  --text-base--line-height: calc(1.5 / 1.03125);
+}
+
 :root {
   color-scheme: dark;
 }
@@ -14,7 +25,9 @@ body,
 body {
   font-family: "Yu Gothic UI", "Segoe UI", system-ui, sans-serif;
   background: #0b0f17;
-  color: #e5e7eb;
+  color: #eef2f7;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 /* スクロールバー（暗色） */

@@ -80,81 +80,91 @@ export function SolutionCard({
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 transition hover:border-slate-700">
-      {/* ヘッダ: ランク + Lv分布 + お気に入り + リンク効果 */}
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      {/* ヘッダ: 左＝ランクとLv分布バッジ（高さ28pxで統一）、右＝固定幅の数値レール。
+          レール幅を固定することで、カードが何枚並んでもリンク効果の数字が縦に揃う。
+          比較しながら視線を上下に走らせる画面なので、桁による左右のブレを消すのを優先する。 */}
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {rank !== undefined && (
             <span
-              className={`flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-xs font-bold ${rankColor(
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-xs font-bold tabular-nums ${rankColor(
                 rank,
               )}`}
             >
-              {rank === 1 ? <Trophy size={13} /> : `#${rank}`}
+              {rank === 1 ? <Trophy size={14} /> : `#${rank}`}
             </span>
           )}
-          <span className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="whitespace-nowrap rounded bg-amber-400/15 px-1.5 py-0.5 font-semibold text-amber-300">
-              Lv6 ×{solution.lv6_count}
-            </span>
-            <span className="whitespace-nowrap rounded bg-sky-400/10 px-1.5 py-0.5 text-sky-300">
-              Lv5 ×{solution.lv5_count}
-            </span>
-            {solution.selected_lv6 > 0 && (
-              <span className="flex items-center gap-0.5 whitespace-nowrap rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300">
-                <Star size={10} />
-                {t("card.selectedLv6", { n: solution.selected_lv6 })}
-              </span>
-            )}
-            {someTargetsMissing && (
-              <span
-                className="flex cursor-help items-center gap-0.5 whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300"
-                title={missingTitle}
-                aria-label={`${t("card.targetsPartial", {
-                  n: solution.selected_present,
-                  total: targetTotal,
-                })} — ${missingTitle}`}
-              >
-                <TriangleAlert size={10} />
-                {t("card.targetsPartial", {
-                  n: solution.selected_present,
-                  total: targetTotal,
-                })}
-              </span>
-            )}
+          {/* Lv6/Lv5 は言語非依存の定型表記なので固定幅にできる。件数が1桁でも2桁でも
+              バッジ幅が変わらず、カード間でバッジの切れ目が縦に揃う。 */}
+          <span className="flex h-7 w-[74px] shrink-0 items-center justify-center rounded-md bg-amber-400/15 text-xs font-semibold tabular-nums text-amber-300">
+            Lv6 ×{solution.lv6_count}
           </span>
+          <span className="flex h-7 w-[74px] shrink-0 items-center justify-center rounded-md bg-sky-400/10 text-xs tabular-nums text-sky-300">
+            Lv5 ×{solution.lv5_count}
+          </span>
+          {solution.selected_lv6 > 0 && (
+            <span className="flex h-7 items-center gap-1 whitespace-nowrap rounded-md bg-emerald-500/15 px-2 text-xs tabular-nums text-emerald-300">
+              <Star size={11} />
+              {t("card.selectedLv6", { n: solution.selected_lv6 })}
+            </span>
+          )}
+          {someTargetsMissing && (
+            <span
+              className="flex h-7 cursor-help items-center gap-1 whitespace-nowrap rounded-md bg-amber-500/15 px-2 text-xs tabular-nums text-amber-300"
+              title={missingTitle}
+              aria-label={`${t("card.targetsPartial", {
+                n: solution.selected_present,
+                total: targetTotal,
+              })} — ${missingTitle}`}
+            >
+              <TriangleAlert size={11} />
+              {t("card.targetsPartial", {
+                n: solution.selected_present,
+                total: targetTotal,
+              })}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-start gap-1">
           {onToggleFavorite && (
             <button
               onClick={onToggleFavorite}
               aria-label={isFavorite ? t("card.favRemove") : t("card.favAdd")}
               title={isFavorite ? t("card.favRemove") : t("card.favAdd")}
               aria-pressed={isFavorite}
-              className="rounded-md p-1 transition hover:bg-slate-800"
+              className="flex h-7 w-7 items-center justify-center rounded-md transition hover:bg-slate-800"
             >
               <Star
                 size={16}
                 className={
                   isFavorite
                     ? "fill-amber-400 text-amber-400"
-                    : "text-slate-500 hover:text-amber-300"
+                    : "text-slate-400 hover:text-amber-300"
                 }
               />
             </button>
           )}
-          <div className="text-right leading-none">
-            {/* 主表示は常に link_effect（ゲーム内表記と一致する実際のリンク効果）。
-                評価に使う eval_link はソフト除外指定時のみ異なりうるため、差がある時だけ
-                下に小さく「評価スコア」として併記する（主従を入れ替えないと、ソフト除外を
-                使う通常利用で常に「最も目立つ数字がゲーム内と違う値」になってしまうため）。 */}
-            <div className="text-2xl font-bold tabular-nums text-slate-100">
-              {solution.link_effect}
+          {/* 主表示は常に link_effect（ゲーム内表記と一致する実際のリンク効果）。
+              評価に使う eval_link はソフト除外指定時のみ異なりうるため、差がある時だけ
+              下に小さく「評価スコア」として併記する（主従を入れ替えないと、ソフト除外を
+              使う通常利用で常に「最も目立つ数字がゲーム内と違う値」になってしまうため）。
+              ラベルと数字は横並び（ベースライン揃え）にして高さをバッジ列と同じ28pxに収める。
+              縦積みにすると右端だけが2段分の高さになり、ヘッダーに余白が生まれてしまう。 */}
+          <div className="w-[116px] border-l border-slate-800 pl-1.5">
+            <div className="flex h-7 items-center justify-end">
+              <span className="flex items-baseline gap-1.5">
+                <span className="text-[12px] leading-none text-slate-400">
+                  {t("card.linkEffect")}
+                </span>
+                <span className="text-xl font-bold leading-none tabular-nums text-slate-100">
+                  {solution.link_effect}
+                </span>
+              </span>
             </div>
-            <div className="text-[10px] text-slate-500">{t("card.linkEffect")}</div>
             {solution.link_effect !== solution.eval_link && (
-              <div className="mt-1 text-[10px] text-slate-500">
+              <div className="mt-0.5 text-right text-[12px] leading-none text-slate-400">
                 {t("card.evalLink")}{" "}
-                <span className="font-semibold tabular-nums text-slate-400">
+                <span className="font-semibold tabular-nums text-slate-300">
                   {solution.eval_link}
                 </span>
               </div>
@@ -166,32 +176,38 @@ export function SolutionCard({
       {/* 全属性の内訳（レベル降順） */}
       <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg bg-slate-950/40 p-2.5">
         {solution.breakdown.map((b) => (
+          // 目標属性の強調は、行頭の★ではなく「左の罫線＋薄い緑背景」で行う。
+          // ★は属性名の表示幅を1文字ぶん奪い、長い属性名が先に truncate されてしまうため。
+          // 罫線は負のマージンで枠の内側パディングへ逃がし、選択の有無で属性名の開始位置が
+          // ずれないようにする（非選択行は同じ幅の透明ボーダー）。
           <div
             key={b.attr_id}
-            className={`flex items-center justify-between gap-2 text-xs ${
-              b.soft_excluded ? "opacity-60" : ""
-            }`}
+            className={`-ml-2 flex items-center justify-between gap-2 rounded-r border-l-2 pl-1.5 text-xs ${
+              b.selected ? "border-emerald-400/70 bg-emerald-500/10" : "border-transparent"
+            } ${b.soft_excluded ? "opacity-75" : ""}`}
           >
             <span className="flex min-w-0 items-center gap-1">
-              {b.selected && <Star size={9} className="shrink-0 text-emerald-400" />}
               <span
                 className={`truncate ${
-                  b.soft_excluded ? "text-slate-500 line-through" : levelTextColor(b.level, b.selected)
+                  b.soft_excluded ? "text-slate-400 line-through" : levelTextColor(b.level, b.selected)
                 }`}
                 title={attrName(b.attr_id, b.attr_name)}
               >
                 {attrName(b.attr_id, b.attr_name)}
               </span>
               {b.soft_excluded && (
-                <span className="shrink-0 rounded bg-rose-500/10 px-1 text-[9px] font-medium text-rose-400">
+                <span className="shrink-0 rounded bg-rose-500/10 px-1 text-[11px] font-medium text-rose-400">
                   {t("card.softExcluded")}
                 </span>
               )}
             </span>
-            <span className="flex items-center gap-2">
-              <span className="text-[10px] text-slate-500">Lv{b.level}</span>
+            {/* Lv・ドット・実値の3列を固定幅にして、内訳のどの行も同じ位置で切れるようにする。 */}
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="w-8 text-right text-[12px] tabular-nums text-slate-400">
+                Lv{b.level}
+              </span>
               <LevelDots level={b.level} />
-              <span className="w-6 text-right font-semibold tabular-nums text-slate-100">
+              <span className="w-7 text-right font-semibold tabular-nums text-slate-100">
                 {b.value}
               </span>
             </span>
@@ -210,23 +226,28 @@ export function SolutionCard({
               <span className="truncate text-xs font-semibold">
                 {moduleName(m.config_id, m.name)}
               </span>
-              <span className="shrink-0 text-[10px] opacity-70">
+              <span className="shrink-0 text-[12px] opacity-90">
                 {categoryLabel(m.category)}·Q{m.quality}
               </span>
             </div>
+            {/* ここだけは固定幅にしない。モジュール枠は最大3部位が入るには狭く、等幅に
+                割ると「集中・攻撃速度」級の属性名が数文字で切れてしまう。属性名は結果を
+                読む上で値と同じくらい重要なので、内容幅のまま折り返す。 */}
             <div className="mt-1 flex flex-wrap gap-1">
               {m.parts.map((p, i) => {
                 const hit = targetIds.has(p.attr_id);
+                const name = attrName(p.attr_id, p.attr_name);
                 return (
                   <span
                     key={i}
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${
+                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] ${
                       hit
                         ? "bg-emerald-500/20 font-semibold text-emerald-200"
                         : "bg-slate-800/60 text-slate-400"
                     }`}
                   >
-                    {attrName(p.attr_id, p.attr_name)} +{p.value}
+                    {name}
+                    <span className="tabular-nums">+{p.value}</span>
                   </span>
                 );
               })}

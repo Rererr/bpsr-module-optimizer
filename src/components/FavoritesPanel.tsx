@@ -29,7 +29,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
 
   if (favorites.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-500">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-400">
         <Star size={48} className="opacity-40" />
         <div>
           <p className="text-sm">{t("fav.emptyTitle")}</p>
@@ -65,7 +65,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
         <button
           onClick={() => setComparing(true)}
           disabled={compareIds.size < 2}
-          className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3 py-1.5 font-medium text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          className="flex h-8 w-[124px] items-center justify-center gap-1.5 rounded-lg bg-indigo-500 font-medium tabular-nums text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300"
         >
           <GitCompare size={13} />
           {t("fav.compareN", { n: compareIds.size })}
@@ -79,7 +79,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
           </button>
         )}
         {compareIds.size === 0 && (
-          <span className="text-slate-500">{t("fav.compareHint")}</span>
+          <span className="text-slate-400">{t("fav.compareHint")}</span>
         )}
         {compareIds.size === 1 && (
           <span className="text-amber-300">{t("fav.compareOneMore")}</span>
@@ -99,8 +99,8 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
               {/* カードヘッダ: 比較選択 + 指紋 + 名前 + 編集/削除 */}
               <div className="flex items-center gap-2 px-1">
                 <label
-                  className={`flex items-center gap-1 text-[11px] ${
-                    atLimit ? "cursor-not-allowed text-slate-600" : "cursor-pointer text-slate-400"
+                  className={`flex items-center gap-1 text-xs ${
+                    atLimit ? "cursor-not-allowed text-slate-500" : "cursor-pointer text-slate-400"
                   }`}
                   title={atLimit ? t("fav.compareMax") : t("fav.compareAdd")}
                 >
@@ -133,7 +133,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
                           setDraft("");
                         }
                       }}
-                      className="min-w-0 flex-1 rounded-md border border-indigo-500/60 bg-slate-900 px-1.5 py-0.5 text-xs text-slate-100 outline-none"
+                      className="h-7 min-w-0 flex-1 rounded-md border border-indigo-500/60 bg-slate-900 px-1.5 text-xs text-slate-100 outline-none"
                     />
                     <button
                       onClick={commitEdit}
@@ -167,7 +167,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
                       onClick={() => startEdit(b)}
                       aria-label={t("fav.renameName", { name: b.name })}
                       title={t("fav.rename")}
-                      className="rounded p-1 text-slate-500 transition hover:bg-slate-800 hover:text-slate-200"
+                      className="rounded p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
                     >
                       <Pencil size={13} />
                     </button>
@@ -175,7 +175,7 @@ export function FavoritesPanel({ favorites, onRename, onRemove }: Props) {
                       onConfirm={() => onRemove(b.id)}
                       label={t("fav.deleteName", { name: b.name })}
                       idle={<Trash2 size={13} />}
-                      className="text-slate-500 hover:bg-slate-800 hover:text-rose-300"
+                      className="text-slate-400 hover:bg-slate-800 hover:text-rose-300"
                     />
                   </>
                 )}

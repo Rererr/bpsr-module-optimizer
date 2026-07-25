@@ -64,7 +64,7 @@ export function StatusBar({
           <h1 className="text-sm font-bold tracking-wide text-slate-100">
             {t("app.title")}
           </h1>
-          <p className="text-[11px] text-slate-400">
+          <p className="text-xs text-slate-400">
             {t("app.subtitle", { n: slotCount })}
           </p>
         </div>
@@ -88,31 +88,36 @@ export function StatusBar({
           ) : status?.source === "capture" ? (
             <Radio size={14} className="text-emerald-400" />
           ) : (
-            <CircleAlert size={14} className="text-slate-500" />
+            <CircleAlert size={14} className="text-slate-400" />
           )}
-          <span className="font-semibold text-slate-200">
+          {/* 件数と経過時間は数秒ごとに文字数が変わる。幅を固定しないと、右隣のボタン列が
+              「たった今」→「3秒前」のたびに左右に動いてしまう。 */}
+          <span className="min-w-[26px] text-right font-semibold tabular-nums text-slate-200">
             {status?.module_count ?? 0}
           </span>
           <span>{t("status.modulesUnit")}</span>
-          <span className="text-slate-600">·</span>
-          <span>{ago(status?.last_update_ms ?? null)}</span>
+          <span className="text-slate-500">·</span>
+          <span className="w-[76px] tabular-nums">{ago(status?.last_update_ms ?? null)}</span>
         </div>
 
+        {/* ヘッダーのボタンは高さ32pxで統一する。 */}
         <button
           onClick={onReloadDump}
           disabled={busy}
-          className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+          className="flex h-8 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
           title={t("status.reloadTitle")}
         >
           <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
           {t("status.reload")}
         </button>
 
+        {/* ラベルが "EN" と "日本語" で文字数が変わるため、幅を固定して押すたびに
+            ヘッダー右端のボタン列がずれるのを防ぐ。 */}
         <button
           onClick={() => setLang(lang === "ja" ? "en" : "ja")}
           aria-label={t("lang.switch")}
           title={t("lang.switch")}
-          className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-semibold text-slate-200 transition hover:bg-slate-700"
+          className="flex h-8 w-[84px] items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 font-semibold text-slate-200 transition hover:bg-slate-700"
         >
           <Languages size={13} />
           {lang === "ja" ? "EN" : "日本語"}
@@ -123,7 +128,7 @@ export function StatusBar({
             onClick={onShowFooter}
             aria-label={t("footer.show")}
             title={t("footer.show")}
-            className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-slate-200 transition hover:bg-slate-700"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-700 bg-slate-800 text-slate-200 transition hover:bg-slate-700"
           >
             <Eye size={13} />
           </button>

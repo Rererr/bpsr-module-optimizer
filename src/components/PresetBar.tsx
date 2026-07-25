@@ -39,7 +39,7 @@ export function PresetBar({ presets, onApply, onSave, onDelete, canSave }: Props
   return (
     <div className="flex flex-col gap-2">
       {presets.length === 0 && !naming && (
-        <p className="text-[11px] leading-relaxed text-slate-500">
+        <p className="text-xs leading-relaxed text-slate-400">
           {t("preset.empty")}
         </p>
       )}
@@ -55,13 +55,13 @@ export function PresetBar({ presets, onApply, onSave, onDelete, canSave }: Props
               >
                 <button
                   onClick={() => onApply(p)}
-                  className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5 py-1.5 text-left"
+                  className="flex h-9 min-w-0 flex-1 items-center justify-between gap-2 px-2.5 text-left"
                   title={t("preset.apply", { name: p.name })}
                 >
                   <span className="truncate text-xs font-medium text-slate-200">
                     {p.name}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1.5 text-[10px]">
+                  <span className="flex shrink-0 items-center gap-1.5 text-[12px]">
                     {target > 0 && (
                       <span className="text-emerald-300">{t("preset.targetN", { n: target })}</span>
                     )}
@@ -74,7 +74,7 @@ export function PresetBar({ presets, onApply, onSave, onDelete, canSave }: Props
                   onConfirm={() => onDelete(p.id)}
                   label={t("preset.deleteName", { name: p.name })}
                   idle={<X size={13} />}
-                  className="text-slate-500 hover:bg-slate-700 hover:text-rose-300"
+                  className="text-slate-400 hover:bg-slate-700 hover:text-rose-300"
                 />
               </div>
             );
@@ -96,7 +96,7 @@ export function PresetBar({ presets, onApply, onSave, onDelete, canSave }: Props
               }
             }}
             placeholder={t("preset.namePlaceholder")}
-            className="min-w-0 flex-1 rounded-md border border-indigo-500/60 bg-slate-900 px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600"
+            className="h-9 min-w-0 flex-1 rounded-md border border-indigo-500/60 bg-slate-900 px-2 text-xs text-slate-100 outline-none placeholder:text-slate-500"
           />
           <button
             onClick={commit}
@@ -124,7 +124,7 @@ export function PresetBar({ presets, onApply, onSave, onDelete, canSave }: Props
           onClick={() => setNaming(true)}
           disabled={!canSave}
           title={canSave ? t("preset.saveCurrent") : t("preset.noneToSave")}
-          className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-700 px-2.5 py-1.5 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-700 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={13} />
           {t("preset.saveCurrent")}
