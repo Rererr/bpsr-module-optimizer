@@ -1,5 +1,6 @@
 import type { AttrMeta, AttrState } from "../types";
 import { useI18n } from "../i18n";
+import { HelpPopover } from "./HelpPopover";
 
 export type { AttrState };
 
@@ -15,6 +16,8 @@ interface Props {
 }
 
 const GROUP_ORDER = ["Basic", "Combat", "Focus", "Resist", "Support", "Ultra"];
+// 除外モードのセグメント順（false=ソフト除外が既定なので先頭）。
+const EXCLUDE_MODES = [false, true];
 
 function chipClass(state: AttrState, special: boolean): string {
   if (state === "target")
@@ -22,7 +25,7 @@ function chipClass(state: AttrState, special: boolean): string {
   if (state === "exclude")
     return "border-rose-500 bg-rose-500/10 text-rose-300 line-through ring-1 ring-rose-500/30";
   return special
-    ? "border-amber-700/50 bg-amber-500/5 text-amber-200/80 hover:border-amber-500"
+    ? "border-amber-600/60 bg-amber-500/10 text-amber-200 hover:border-amber-500"
     : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-500";
 }
 
@@ -57,6 +60,62 @@ export function AttributePicker({
             <span className="h-2 w-2 rounded-full bg-rose-500" />
             {t("picker.excludeN", { n: excludeCount })}
           </span>
+          {/* 使い方の説明は常時表示すると、属性チップと除外モードの切替を画面下へ押し出す。
+              説明の中身は「除外」の意味に踏み込む部分が大半なので、除外ラベルの隣へ置く。 */}
+          <HelpPopover label={t("picker.helpLabel")}>
+            {lang === "ja" ? (
+              <>
+                <p>
+                  クリックで <span className="font-semibold text-emerald-300">目標</span> →{" "}
+                  <span className="font-semibold text-rose-300">除外</span> → 解除 と切り替わります。
+                </p>
+                <dl className="mt-2 space-y-1.5">
+                  <div>
+                    <dt className="font-semibold text-emerald-300">目標</dt>
+                    <dd>その属性のLv6到達を優先します。</dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold text-rose-300">除外（ソフト・既定）</dt>
+                    <dd>
+                      その属性をスコア評価から外します。Lv6/Lv5の数にもリンク効果にも数えません。
+                      同点になったときだけ、巻き添えの少ない方を選びます。
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold text-rose-300">除外（ハード）</dt>
+                    <dd>下の切替を「ハード除外」にすると、その属性を含むモジュールを一切使いません。</dd>
+                  </div>
+                </dl>
+              </>
+            ) : (
+              <>
+                <p>
+                  Click to cycle <span className="font-semibold text-emerald-300">Target</span> →{" "}
+                  <span className="font-semibold text-rose-300">Exclude</span> → off.
+                </p>
+                <dl className="mt-2 space-y-1.5">
+                  <div>
+                    <dt className="font-semibold text-emerald-300">Target</dt>
+                    <dd>Prioritizes reaching Lv6 for that attribute.</dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold text-rose-300">Exclude (soft, default)</dt>
+                    <dd>
+                      Drops the attribute from scoring — not counted toward Lv6/Lv5 totals or the
+                      link effect. Only breaks ties, in favor of the build carrying less of it.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold text-rose-300">Exclude (hard)</dt>
+                    <dd>
+                      Set the control below to Hard exclude to never use modules containing that
+                      attribute.
+                    </dd>
+                  </div>
+                </dl>
+              </>
+            )}
+          </HelpPopover>
         </div>
         <button
           onClick={onClear}
@@ -66,60 +125,49 @@ export function AttributePicker({
         </button>
       </div>
 
-      <p className="text-[11px] leading-relaxed text-slate-500">
-        {lang === "ja" ? (
-          <>
-            クリックで <span className="text-emerald-300">目標</span> →{" "}
-            <span className="text-rose-300">除外</span> → 解除 と切替。
-            <span className="text-emerald-300">目標</span>はLv6到達を優先、
-            <span className="text-rose-300">除外</span>は既定でソフト除外
-            （その属性はスコア評価から除外＝Lv6/Lv5数やリンク効果の集計に数えません。同点に
-            なった場合のみ、巻き添えの少ない方を優先します）。下の切替でハード除外
-            （その属性を含むモジュールを一切使わない）に変更できます。
-          </>
-        ) : (
-          <>
-            Click to cycle <span className="text-emerald-300">Target</span> →{" "}
-            <span className="text-rose-300">Exclude</span> → off.{" "}
-            <span className="text-emerald-300">Target</span> prioritizes reaching Lv6;{" "}
-            <span className="text-rose-300">Exclude</span> defaults to a soft exclude (that
-            attribute is dropped from scoring — not counted toward Lv6/Lv5 counts or the
-            link-effect total. Only when tied does it prefer the option with less of that
-            attribute as a side effect). Use the toggle below for a hard exclude (never use
-            modules containing that attribute).
-          </>
-        )}
-      </p>
-
-      <label className="flex items-center gap-2 text-[11px] text-slate-400">
-        <input
-          type="checkbox"
-          checked={hardExclude}
-          onChange={(e) => onHardExcludeChange(e.target.checked)}
-          className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-rose-500"
-        />
-        {t("picker.hardExclude")}
-      </label>
+      {/* 除外の強さは、チェックボックス（オフ側の意味が読み取れない）ではなく
+          2択セグメントにする。他の設定と同じ形なので、開かなくても現在どちらで
+          探索するかが分かる。 */}
+      <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+        {EXCLUDE_MODES.map((hard) => (
+          <button
+            key={String(hard)}
+            onClick={() => onHardExcludeChange(hard)}
+            aria-pressed={hardExclude === hard}
+            className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
+              hardExclude === hard
+                ? "bg-indigo-500 text-white shadow"
+                : "text-slate-300 hover:bg-slate-700/60"
+            }`}
+          >
+            {t(hard ? "picker.excludeHard" : "picker.excludeSoft")}
+          </button>
+        ))}
+      </div>
 
       <div className="flex flex-col gap-3">
         {groups.map((g) => (
           <div key={g}>
-            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
               {groupLabel(g)}
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            {/* 属性名の文字数がまちまちなため、可変幅のチップを折り返すと右端がガタつく。
+                2列の等幅グリッドに固定し、グループが変わっても列位置が揃うようにする。 */}
+            <div className="grid grid-cols-2 gap-1.5">
               {byGroup.get(g)!.map((a) => {
                 const st = selection[a.id] ?? "none";
+                const name = attrName(a.id, a.name);
                 return (
                   <button
                     key={a.id}
                     onClick={() => onCycle(a.id)}
-                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${chipClass(
+                    title={name}
+                    className={`h-8 truncate rounded-md border px-2.5 text-xs font-medium transition ${chipClass(
                       st,
                       a.special,
                     )}`}
                   >
-                    {attrName(a.id, a.name)}
+                    {name}
                   </button>
                 );
               })}
