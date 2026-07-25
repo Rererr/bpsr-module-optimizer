@@ -14,7 +14,7 @@ From the modules you own, it brute-forces every combination of **4 or 5 slots** 
 
 <p align="center">
   <img src="docs/images/optimizer-result-en.png" alt="Optimization results — brute-forces the best 4 slots from your owned modules" width="860">
-  <br><sub>Brute-forces the best 4-slot build for your target attributes (here: 142 candidates, over 16 million combinations searched)</sub>
+  <br><sub>Brute-forces the best 4-slot build for your target attributes (here: 230 candidates, 113 million combinations searched)</sub>
 </p>
 
 > A personal-use helper tool. It modifies none of the game's files, memory, or network traffic. Use it at your own risk, and check the terms of service of each platform.
