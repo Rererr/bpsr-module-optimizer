@@ -28,3 +28,7 @@ dist-ssr
 
 # 内部・非公開の作業資料（宣伝下書き・戦略メモ等。ローカル管理・非コミット）
 docs-private/
+
+# 検証用の所持モジュールダンプ。実所持データ由来のため公開せずローカルにのみ置く
+# （scripts/synthesize_dump.js で再生成できる。詳細は CLAUDE.md）
+/testdata/
