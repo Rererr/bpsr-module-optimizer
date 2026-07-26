@@ -1,4 +1,4 @@
-import { RefreshCw, Radio, FileJson, CircleAlert, Languages, Eye } from "lucide-react";
+import { RefreshCw, Radio, FileJson, CircleAlert, Languages, Eye, Users } from "lucide-react";
 import type { StatusDto } from "../types";
 import { useI18n } from "../i18n";
 
@@ -11,6 +11,7 @@ interface Props {
   // 設定画面が無いため、フッターが非表示のときだけヘッダーにこのボタンを出す。
   footerVisible: boolean;
   onShowFooter: () => void;
+  onSelectCharacter: (charId: string) => void;
 }
 
 function stateColor(s: StatusDto["capture_state"]): string {
@@ -31,8 +32,22 @@ export function StatusBar({
   slotCount,
   footerVisible,
   onShowFooter,
+  onSelectCharacter,
 }: Props) {
   const { t, lang, setLang } = useI18n();
+  const allCharacters = status?.characters ?? [];
+  // 擬似キャラ（char_id="0" = レガシー owned_modules.json / BPSR_MODULE_DUMP の受け皿）は、
+  // 実キャラを検知したら選択肢から隠す。中身は起動前の古いダンプで、実キャラと並べて
+  // 「(未特定) 230件」と見せても選ぶ意味が薄く、単一クライアント利用者に正体不明の
+  // 選択肢を見せるだけになるため。ファイルは残るのでデータ損失はない。
+  // ただし有効キャラが擬似キャラ自身のとき（BPSR_MODULE_DUMP 指定中）は隠さない。
+  // 有効キャラが選択肢に無いと <select> の値が宙に浮く。
+  const hasRealCharacter = allCharacters.some((c) => c.char_id !== "0");
+  const characters = allCharacters.filter(
+    (c) => c.char_id !== "0" || !hasRealCharacter || status?.selected_char_id === "0",
+  );
+  // キャラが1体しか検知されていない時は、通常利用者に余計な要素を見せないため選択 UI を出さない。
+  const showCharacterPicker = characters.length > 1;
 
   const stateLabel = (s: StatusDto["capture_state"]): string => {
     switch (s) {
@@ -99,6 +114,28 @@ export function StatusBar({
           <span className="text-slate-500">·</span>
           <span className="w-[76px] tabular-nums">{ago(status?.last_update_ms ?? null)}</span>
         </div>
+
+        {showCharacterPicker && (
+          <div className="flex items-center gap-1.5 text-slate-400">
+            <Users size={14} />
+            <select
+              value={status?.selected_char_id ?? ""}
+              onChange={(e) => onSelectCharacter(e.target.value)}
+              aria-label={t("char.selectLabel")}
+              title={t("char.selectLabel")}
+              className="h-8 max-w-[140px] rounded-md border border-slate-700 bg-slate-800 px-2 text-xs text-slate-200"
+            >
+              {characters.map((c) => (
+                <option key={c.char_id} value={c.char_id}>
+                  {t("char.optionLabel", {
+                    name: c.name || t("char.unknown"),
+                    n: c.module_count,
+                  })}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* ヘッダーのボタンは高さ32pxで統一する。 */}
         <button

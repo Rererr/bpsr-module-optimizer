@@ -22,4 +22,6 @@ Star Resonance の所持モジュールから、選択属性の戦闘力スコ�
 - **アプリが異常終了すると WinDivert ドライバがロードされたまま残り、`target/debug/WinDivert64.sys` のロックで以後のビルドが `os error 32` で失敗する**。`sc query WinDivert` が RUNNING なら管理者権限で `sc stop WinDivert`
 - 検証用ダンプ: `testdata/owned_modules_230.json`(gitignore・非公開。実所持166件＋合成64件)。起動時に読ませるには `BPSR_MODULE_DUMP` に絶対パスを指定する。再生成は `node scripts/synthesize_dump.js <入力dump> <出力dump> <件数> [seed]`(シード固定で再現可能)
 - 検証補助: `../module_diag.py`(`../extracted_game_data/owned_modules.json` の属性レベル集計)
+- 複数クライアント同時起動時はキャラ別（`char_id`）にモジュールを保持・保存する。exe と同じディレクトリに生成される: `owned_modules_<char_id>.json`(キャラ別ダンプ)、`characters.json`(検知済みキャラ索引)。レガシー単一ファイル `owned_modules.json` は char_id=0 の「未特定」擬似キャラ専用として今も使う(削除・移行はしない)
+- `BPSR_MODULE_DUMP` 指定時は指定ダンプを char_id=0 の擬似キャラとして読み込み、設定中はそれが常に有効キャラになる(実キャラをライブ検知していても優先。検証用途の明示的意図を尊重するため)。有効キャラの解決優先順位は `src-tauri/src/state.rs` の `Inner::effective_char` 参照
 - 経緯・決定はメモリ `~/.claude/projects/C--Users-PCuser-develop-bpsr-module-optimizer/memory/` を参照

@@ -15,6 +15,11 @@ export function captureStatus(): Promise<StatusDto> {
   return invoke<StatusDto>("capture_status");
 }
 
+/** 表示/探索対象のキャラを切り替える。戻り値は切替後のモジュール件数。 */
+export function selectCharacter(charId: string): Promise<number> {
+  return invoke<number>("select_character", { charId });
+}
+
 export interface OptimizeArgs {
   selectedIds: number[];
   category: string | null;

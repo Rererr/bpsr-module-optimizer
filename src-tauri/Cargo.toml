@@ -1,6 +1,6 @@
 [package]
 name = "bpsr-module-optimizer"
-version = "0.10.0"
+version = "0.11.0"
 description = "Star Resonance モジュール最適化ツール（所持モジュールから戦闘力スコア最大の枠を探索。4/5枠に対応）"
 authors = ["Rererr"]
 edition = "2021"
@@ -43,6 +43,9 @@ wgpu = { version = "29", optional = true, default-features = false, features = [
     "std",
 ] }
 pollster = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 # 実行時自己昇格（管理者へ runas で再起動）に使用。
 [target.'cfg(windows)'.dependencies]

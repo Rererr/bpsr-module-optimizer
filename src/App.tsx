@@ -6,6 +6,7 @@ import {
   getAttributes,
   optimize,
   reloadFromDump,
+  selectCharacter,
 } from "./api";
 import type {
   AttrMeta,
@@ -121,7 +122,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const presets = usePresets();
-  const favorites = useFavorites();
+  // お気に入りのみキャラ別（uuid は特定キャラの所持モジュールを指すため）。キャラが
+  // まだ1件も検知されていない（status 未取得 or characters が空）間は null を渡し、
+  // useFavorites 側で読込・保存自体を抑止する（"0" 固定にすると未検知中に
+  // bpsr.favorites.v1.0 のゴミキーができてしまうため）。
+  const activeCharId = status && status.characters.length > 0 ? status.selected_char_id : null;
+  const favorites = useFavorites(activeCharId);
 
   const targetIds = useMemo(
     () =>
@@ -160,9 +166,45 @@ export default function App() {
     saveJSON(STORAGE_KEYS.footerVisible, footerVisible);
   }, [footerVisible]);
 
-  const refreshStatus = useCallback(() => {
-    captureStatus().then(setStatus).catch(() => {});
+  // 保存された選択キャラの復元が既に適用済み（またはそもそも保存値が無く不要）かどうか。
+  // 一度成立したら、以後の characters-updated / ポーリングで再試行しない
+  // （ユーザーの明示選択を先着自動採用で上書きしないため。保存値の書込は
+  // onSelectCharacter による明示選択時のみ行う＝復元側は保存値を上書きしない）。
+  const restoredSelectionRef = useRef(false);
+
+  // 保存された選択キャラがまだ検知一覧に現れていなければ何もしない（保持したまま
+  // 次回の characters-updated で再試行する）。現れていれば select_character で復元する。
+  // st.selected_char_id は自動解決の結果であって「明示的に固定された」ことを意味しない
+  // （backend の selected_char_id: Option<i64> が None のままでも、たまたま自動解決が
+  // 保存値と同じ id を指すことがある）ため、id が一致していても必ず select_character を
+  // 呼んで明示的に固定する（同一 id への再選択は冪等）。
+  const tryRestoreSelectedCharacter = useCallback((st: StatusDto) => {
+    if (restoredSelectionRef.current) return;
+    const savedCharId = loadJSON<string | null>(STORAGE_KEYS.selectedCharId, null);
+    if (savedCharId == null) {
+      restoredSelectionRef.current = true;
+      return;
+    }
+    if (!st.characters.some((c) => c.char_id === savedCharId)) return;
+    restoredSelectionRef.current = true;
+    // 他キャラの結果を残さない（onSelectCharacter と同じリセットを通す）。
+    setResult(null);
+    setElapsedMs(null);
+    setAppliedRankMode(null);
+    setError(null);
+    selectCharacter(savedCharId)
+      .then(() => captureStatus().then(setStatus).catch(() => {}))
+      .catch((e) => setError(String(e)));
   }, []);
+
+  const refreshStatus = useCallback(() => {
+    captureStatus()
+      .then((st) => {
+        setStatus(st);
+        tryRestoreSelectedCharacter(st);
+      })
+      .catch(() => {});
+  }, [tryRestoreSelectedCharacter]);
 
   // 最新の探索条件を ref に保持（イベント購読クロージャから参照するため）。
   const runRef = useRef<() => void>(() => {});
@@ -240,20 +282,54 @@ export default function App() {
   }, [runOptimize]);
 
   // 初期化: 属性ロード・ステータス監視・モジュール更新イベント購読。
+  // 保存された選択キャラの復元は refreshStatus 経由の tryRestoreSelectedCharacter が
+  // 都度（初回・ポーリング・characters-updated）試みる。
   useEffect(() => {
     getAttributes().then(setAttributes).catch((e) => setError(String(e)));
     refreshStatus();
+
     const timer = setInterval(refreshStatus, 2000);
-    const un = listen<number>("modules-updated", () => {
+    const unModules = listen<number>("modules-updated", () => {
       refreshStatus();
-      // 目標が選択済みなら新データで自動再探索。
+      // 新データで自動再探索する（select_character も切替の都度これを emit するため、
+      // 目標未選択でも走る＝毎回 runOptimize が呼ばれる。目標未選択時に候補0件などで
+      // 空振りするのは runWith 内のエラーハンドリングに委ねる）。
       runRef.current();
+    });
+    // キャラ一覧（新規検知・名前・件数）が変わったら選択 UI を更新し、保存された
+    // 選択キャラがまだ現れていなければ復元を再試行する。
+    const unCharacters = listen("characters-updated", () => {
+      refreshStatus();
     });
     return () => {
       clearInterval(timer);
-      un.then((f) => f());
+      unModules.then((f) => f());
+      unCharacters.then((f) => f());
     };
   }, [refreshStatus]);
+
+  // ユーザーの明示選択。保存値の上書きはここだけで行う（復元側は保存値を書き換えない）。
+  // status?.selected_char_id は自動解決の結果に過ぎず「既に固定済み」を意味しない
+  // ため、一致していても早期リターンせず必ず select_character を呼んで明示的に固定する
+  // （さもないと「自動採用中のキャラを明示的に選び直す」操作が永続化されない）。
+  const onSelectCharacter = async (charId: string) => {
+    if (!charId) return;
+    restoredSelectionRef.current = true;
+    // 他キャラのモジュールで出した解を残さない。
+    setResult(null);
+    setElapsedMs(null);
+    setAppliedRankMode(null);
+    setError(null);
+    try {
+      await selectCharacter(charId);
+      saveJSON(STORAGE_KEYS.selectedCharId, charId);
+      // select_character が modules-updated を emit するため、購読側で
+      // refreshStatus + 自動再探索が走る。ここでも即時反映のため軽く呼んでおく。
+      refreshStatus();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const cycle = (id: number) => {
     setSelection((prev) => {
@@ -350,6 +426,7 @@ export default function App() {
         slotCount={slotCount}
         footerVisible={footerVisible}
         onShowFooter={() => setFooterVisible(true)}
+        onSelectCharacter={onSelectCharacter}
       />
 
       <div className="flex min-h-0 flex-1">

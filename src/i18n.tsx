@@ -128,6 +128,10 @@ const DICT: Record<Lang, Record<string, string>> = {
     "footer.reportGithub": "GitHubで報告",
     "footer.show": "フッターを表示",
     "footer.hide": "フッターを隠す",
+    "char.unknown": "(未特定)",
+    "char.selectLabel": "キャラ選択",
+    // 同名・「(未特定)」が複数並んでも区別できるよう件数を併記する。
+    "char.optionLabel": "{name}（{n}件）",
   },
   en: {
     "app.title": "BPSR Module Optimizer",
@@ -239,6 +243,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "footer.reportGithub": "Report on GitHub",
     "footer.show": "Show footer",
     "footer.hide": "Hide footer",
+    "char.unknown": "(unidentified)",
+    "char.selectLabel": "Character",
+    "char.optionLabel": "{name} ({n})",
   },
 };
 

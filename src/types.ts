@@ -63,12 +63,24 @@ export interface OptimizeResult {
   engine: string;
 }
 
+// 検知済み1キャラの情報。char_id は i64（UID）の精度落ちを避けるため文字列。
+export interface CharacterDto {
+  char_id: string;
+  name: string; // 空文字なら未特定（レガシー単一ファイル/env指定ダンプ由来の擬似キャラ）
+  last_update_ms: number;
+  module_count: number;
+}
+
 export interface StatusDto {
   capture_state: "init" | "running" | "failed";
   module_count: number;
   last_update_ms: number | null;
   source: "capture" | "dump" | "none";
   last_game_packet_ms_ago: number | null;
+  // 検知済みキャラ一覧（検知順）。
+  characters: CharacterDto[];
+  // 実際に有効になっているキャラの id（自動採用時もその id を返す）。
+  selected_char_id: string | null;
 }
 
 // 属性レベルの閾値境界（属性値 → Lv0〜6）。UI のレベル表示に使う。
