@@ -34,6 +34,10 @@ export interface OptimizeArgs {
   slotCount: number;
   /// ランキング順序モード。
   rankMode: RankMode;
+  /// 候補の切り捨て: 品質がこれ未満のモジュールを候補から外す（0=無効）。
+  minQuality: number;
+  /// 候補の切り捨て: 属性値の合計がこれ未満のモジュールを候補から外す（0=無効）。
+  minModuleValue: number;
 }
 
 export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
@@ -46,6 +50,8 @@ export function optimize(args: OptimizeArgs): Promise<OptimizeResult> {
     topK: args.topK,
     slotCount: args.slotCount,
     rankMode: args.rankMode,
+    minQuality: args.minQuality,
+    minModuleValue: args.minModuleValue,
   });
 }
 

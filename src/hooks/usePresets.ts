@@ -12,6 +12,8 @@ export type PresetConfig = Pick<
   | "slotCount"
   | "hardExclude"
   | "rankMode"
+  | "minQuality"
+  | "minModuleValue"
 >;
 
 function newId(): string {

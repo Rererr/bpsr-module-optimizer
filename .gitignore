@@ -25,6 +25,9 @@ dist-ssr
 
 # Vendored crate build output (if ever built in place)
 /bpsr-core/target/
+# ベンダリングしたライブラリクレートのロックファイル。src-tauri のビルドで生成されるが
+# 依存解決は src-tauri/Cargo.lock 側が持つため不要（毎回 untracked に現れるので無視する）
+/bpsr-core/Cargo.lock
 
 # 内部・非公開の作業資料（宣伝下書き・戦略メモ等。ローカル管理・非コミット）
 docs-private/

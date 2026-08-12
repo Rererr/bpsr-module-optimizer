@@ -28,11 +28,25 @@ import { PresetBar } from "./components/PresetBar";
 import { ConditionSummary } from "./components/ConditionSummary";
 import { FavoritesPanel } from "./components/FavoritesPanel";
 import { Footer } from "./components/Footer";
+import { CutoffWarningDialog } from "./components/CutoffWarningDialog";
 
 const CATEGORIES = ["all", "attack", "guardian", "support"];
-const TOP_K_OPTIONS = [3, 5, 10];
+// 表示件数の入力範囲。上限50は「GPU カーネルが扱える top_k の上限64（超えると CPU
+// フォールバックで遅くなる）」と「バックエンドの clamp(1,100)」の内側に収まる値。
+const TOP_K_MIN = 1;
+const TOP_K_MAX = 50;
+const DEFAULT_TOP_K = 5;
 const SLOT_COUNT_OPTIONS = [4, 5];
 const RANK_MODE_OPTIONS: RankMode[] = ["link", "lv5"];
+// 候補の切り捨て（「候補の絞り込み」）。速度目的ではなくユーザーの明示的な意思表示
+// （このモジュールは使わない）として提供するため、既定は常に無効＝所持すべてが候補。
+// 上限は src-tauri/src/lib.rs の MAX_MIN_QUALITY / MAX_MIN_MODULE_VALUE と一致させること。
+// 上限の根拠: 512件×5パターンの実測で、合計値 8 までは全パターンで上位10件が全数探索と
+// 一致した（10〜12 で2位以下が、13 以上で1位が崩れる）。
+const CUTOFF_MAX_QUALITY = 4;
+const CUTOFF_MAX_VALUE = 8;
+// 品質の選択肢（0=絞り込みなし）。実データの品質は 2(部位1)/3(部位2)/4(部位3)。
+const MIN_QUALITY_OPTIONS = [0, 3, 4];
 
 // localStorage 由来の値は型が保証されない（壊れた値・将来バージョンの値が入りうる）。
 // RankMode は Rust 側で厳格な enum のため、不正な値をそのまま渡すと optimize コマンド全体が
@@ -40,6 +54,20 @@ const RANK_MODE_OPTIONS: RankMode[] = ["link", "lv5"];
 // 未知の値は黙って既定の "link" へフォールバックする。
 function normalizeRankMode(mode: RankMode | undefined): RankMode {
   return mode !== undefined && RANK_MODE_OPTIONS.includes(mode) ? mode : "link";
+}
+// 表示件数の正規化。localStorage・プリセット由来の値は型も範囲も保証されない
+// （旧バージョンで保存した選択肢、手で壊された値、上限変更前の値が入りうる）ため、
+// 整数へ丸めて TOP_K_MIN〜TOP_K_MAX に収める。バックエンドも clamp(1,100) するが、
+// 入力欄の表示・保存値・探索へ渡す値が食い違わないよう、フロント側の正規化口はここ1つ。
+function normalizeTopK(v: number | undefined): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULT_TOP_K;
+  return Math.min(Math.max(Math.round(v), TOP_K_MIN), TOP_K_MAX);
+}
+// 切り捨て設定の正規化。旧データ（本機能追加前の lastSearch / プリセット）には存在せず、
+// 壊れた値も入りうるため、未定義・範囲外は 0（絞り込みなし）へ寄せる。
+function normalizeCutoff(v: number | undefined, max: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
+  return Math.min(Math.max(Math.round(v), 0), max);
 }
 // 新規インストール時、および slotCount 導入前の旧 lastSearch を復元した時の初期スロット数。
 // 前向きに5枠を既定にする（restored.slotCount ?? INITIAL_SLOT_COUNT）。
@@ -57,6 +85,8 @@ interface LastSearch {
   slotCount: number;
   hardExclude: boolean;
   rankMode: RankMode;
+  minQuality: number;
+  minModuleValue: number;
 }
 
 type Tab = "results" | "favorites";
@@ -83,7 +113,13 @@ export default function App() {
     () => restored.selection ?? {},
   );
   const [category, setCategory] = useState<string>(() => restored.category ?? "all");
-  const [topK, setTopK] = useState<number>(() => restored.topK ?? 5);
+  const [topK, setTopK] = useState<number>(() => normalizeTopK(restored.topK));
+  // 表示件数の入力欄に表示している文字列。入力途中の未確定値（空欄、"50" を打つ
+  // 途中の "5"、上限超えの "60"）を許容するため確定値 topK とは別に持ち、
+  // フォーカスが外れた時点（または Enter）で正規化して両者を揃える。
+  const [topKDraft, setTopKDraft] = useState<string>(() =>
+    String(normalizeTopK(restored.topK)),
+  );
   const [slotCount, setSlotCount] = useState<number>(
     () => restored.slotCount ?? INITIAL_SLOT_COUNT,
   );
@@ -91,6 +127,22 @@ export default function App() {
   const [requireLevels, setRequireLevels] = useState<Record<number, number>>(
     () => restored.requireLevels ?? {},
   );
+  // 候補の切り捨て（0=絞り込みなし）。既定は無効で、有効化時に確認ダイアログを出す。
+  const [minQuality, setMinQuality] = useState<number>(() =>
+    normalizeCutoff(restored.minQuality, CUTOFF_MAX_QUALITY),
+  );
+  const [minModuleValue, setMinModuleValue] = useState<number>(() =>
+    normalizeCutoff(restored.minModuleValue, CUTOFF_MAX_VALUE),
+  );
+  // 合計値の入力欄の表示文字列（topKDraft と同じ理由で確定値とは別に持つ）。
+  const [minValueDraft, setMinValueDraft] = useState<string>(() =>
+    String(normalizeCutoff(restored.minModuleValue, CUTOFF_MAX_VALUE)),
+  );
+  // 確認待ちの切り捨て設定（null=確認ダイアログ非表示）。無効→有効の変更時のみ入る。
+  const [pendingCutoff, setPendingCutoff] = useState<{
+    quality: number;
+    value: number;
+  } | null>(null);
   // 除外モード: true=ハード除外（該当モジュールを丸ごと除外）、false=ソフト除外（新規既定。
   // 属性のみランキング集計から除外し、モジュール自体は候補に残す）。
   // 旧データ（本機能追加前）は除外＝常にハード除外だったため、hardExclude 未定義時は
@@ -107,6 +159,9 @@ export default function App() {
   // （rankMode は topK/slotCount と違って見た目が変わらないため、既存パターンの
   // 「変更だけでは再検索しない」だけでは変更が反映されていないことに気づけない）。
   const [appliedRankMode, setAppliedRankMode] = useState<RankMode | null>(null);
+  // 所持モジュールが更新されたのに自動再探索をスキップした（＝表示中の結果が現在の
+  // 所持モジュールより古い）ことを示す。探索が成功した時点で解除する。
+  const [modulesStale, setModulesStale] = useState(false);
   // フッター表示設定。設定画面が無いため lastSearch とは別キーで独立永続化する（既定=表示ON）。
   const [footerVisible, setFooterVisible] = useState<boolean>(() =>
     loadJSON(STORAGE_KEYS.footerVisible, true),
@@ -159,8 +214,20 @@ export default function App() {
       slotCount,
       hardExclude,
       rankMode,
+      minQuality,
+      minModuleValue,
     });
-  }, [selection, requireLevels, category, topK, slotCount, hardExclude, rankMode]);
+  }, [
+    selection,
+    requireLevels,
+    category,
+    topK,
+    slotCount,
+    hardExclude,
+    rankMode,
+    minQuality,
+    minModuleValue,
+  ]);
 
   useEffect(() => {
     saveJSON(STORAGE_KEYS.footerVisible, footerVisible);
@@ -208,6 +275,12 @@ export default function App() {
 
   // 最新の探索条件を ref に保持（イベント購読クロージャから参照するため）。
   const runRef = useRef<() => void>(() => {});
+  // 目標属性が選ばれているか。イベント購読は初回1度きりで張るため、クロージャが
+  // 初期値に固定されないよう runRef と同じく ref 経由で最新値を読む。
+  const hasTargetRef = useRef(false);
+  useEffect(() => {
+    hasTargetRef.current = targetIds.length > 0;
+  }, [targetIds]);
 
   // 明示的に渡した条件で探索する（プリセット適用・条件解除でも再利用）。
   const runWith = useCallback(
@@ -219,6 +292,8 @@ export default function App() {
       slots: number,
       hardExcl: boolean,
       mode: RankMode,
+      minQ: number,
+      minVal: number,
     ) => {
       setError(null);
       setLoading(true);
@@ -248,10 +323,13 @@ export default function App() {
           topK: k,
           slotCount: slots,
           rankMode: mode,
+          minQuality: minQ,
+          minModuleValue: minVal,
         });
         setElapsedMs(performance.now() - startedAt);
         setResult(res);
         setAppliedRankMode(mode);
+        setModulesStale(false);
         if (res.solutions.length === 0) {
           setError(
             res.candidate_count < slots
@@ -273,8 +351,30 @@ export default function App() {
   );
 
   const runOptimize = useCallback(
-    () => runWith(selection, requireLevels, category, topK, slotCount, hardExclude, rankMode),
-    [runWith, selection, requireLevels, category, topK, slotCount, hardExclude, rankMode],
+    () =>
+      runWith(
+        selection,
+        requireLevels,
+        category,
+        topK,
+        slotCount,
+        hardExclude,
+        rankMode,
+        minQuality,
+        minModuleValue,
+      ),
+    [
+      runWith,
+      selection,
+      requireLevels,
+      category,
+      topK,
+      slotCount,
+      hardExclude,
+      rankMode,
+      minQuality,
+      minModuleValue,
+    ],
   );
 
   useEffect(() => {
@@ -291,9 +391,15 @@ export default function App() {
     const timer = setInterval(refreshStatus, 2000);
     const unModules = listen<number>("modules-updated", () => {
       refreshStatus();
-      // 新データで自動再探索する（select_character も切替の都度これを emit するため、
-      // 目標未選択でも走る＝毎回 runOptimize が呼ばれる。目標未選択時に候補0件などで
-      // 空振りするのは runWith 内のエラーハンドリングに委ねる）。
+      // 目標属性が未選択のときは自動再探索しない。目標なしの探索は B&B の上界が緩く
+      // 最悪ケースになり（所持458件の実測で目標あり4.5s に対し目標なし41.6s）、装備を
+      // 変えるたびに数十秒 CPU を占有してしまう。代わりに「結果が古い」ことを示して
+      // 手動実行に委ねる（select_character もキャラ切替の都度これを emit するため、
+      // 抑止しないとキャラを切り替えるだけで最悪ケースが走る）。
+      if (!hasTargetRef.current) {
+        setModulesStale(true);
+        return;
+      }
       runRef.current();
     });
     // キャラ一覧（新規検知・名前・件数）が変わったら選択 UI を更新し、保存された
@@ -356,12 +462,109 @@ export default function App() {
     const next = { ...selection };
     delete next[id];
     setSelection(next);
-    runWith(next, requireLevels, category, topK, slotCount, hardExclude, rankMode);
+    runWith(
+      next,
+      requireLevels,
+      category,
+      topK,
+      slotCount,
+      hardExclude,
+      rankMode,
+      minQuality,
+      minModuleValue,
+    );
   };
 
   const resetCategory = () => {
     setCategory("all");
-    runWith(selection, requireLevels, "all", topK, slotCount, hardExclude, rankMode);
+    runWith(
+      selection,
+      requireLevels,
+      "all",
+      topK,
+      slotCount,
+      hardExclude,
+      rankMode,
+      minQuality,
+      minModuleValue,
+    );
+  };
+
+  // 入力欄以外の経路（プリセット適用）から表示件数を変える時の唯一の口。確定値と
+  // 入力欄の表示を必ず同時に更新する（片方だけ更新すると入力欄に古い値が残る）。
+  // 正規化後の値を返すので、呼び出し側は探索へ渡す値をここから受け取れる。
+  const applyTopK = (v: number): number => {
+    const k = normalizeTopK(v);
+    setTopK(k);
+    setTopKDraft(String(k));
+    return k;
+  };
+
+  // 入力中は数字のみを受け取り、範囲内になった時点で確定値へ反映する
+  // （localStorage への記憶もこの反映経路で走る）。空欄・範囲外は確定させず、
+  // commitTopKDraft（blur / Enter）で丸めて確定する。
+  const onTopKInput = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    setTopKDraft(digits);
+    const n = Number.parseInt(digits, 10);
+    if (Number.isInteger(n) && n >= TOP_K_MIN && n <= TOP_K_MAX) setTopK(n);
+  };
+
+  // 入力欄を離れた時点で表示を確定値へ揃える。空欄・数値でない入力は直前の確定値へ
+  // 戻し、0 や上限超えは範囲内へ丸める。
+  const commitTopKDraft = () => {
+    const n = Number.parseInt(topKDraft, 10);
+    applyTopK(Number.isNaN(n) ? topK : n);
+  };
+
+  // 切り捨て設定を確定する（確認済み、または確認が不要な変更）。入力欄の表示も揃える。
+  const applyCutoff = (quality: number, value: number) => {
+    setMinQuality(quality);
+    setMinModuleValue(value);
+    setMinValueDraft(String(value));
+  };
+
+  // 切り捨て設定の変更要求。「絞り込みなし」から絞り込みを有効にするときだけ確認を挟む
+  // （有効なままの値の調整や、解除の操作では出さない）。
+  const requestCutoff = (quality: number, value: number) => {
+    const wasOff = minQuality === 0 && minModuleValue === 0;
+    const willBeOn = quality > 0 || value > 0;
+    // 金品質(CUTOFF_MAX_QUALITY)は実測で最も1位が壊れやすいため、既に絞り込み中でも
+    // 新たに選ぶときは必ず確認する（紫→金の変更が無警告で通ると、最も危険な設定へ
+    // 黙って移ってしまう）。
+    const newlyMaxQuality =
+      quality >= CUTOFF_MAX_QUALITY && minQuality < CUTOFF_MAX_QUALITY;
+    if ((wasOff && willBeOn) || newlyMaxQuality) {
+      setPendingCutoff({ quality, value });
+      return;
+    }
+    applyCutoff(quality, value);
+  };
+
+  const onMinValueInput = (raw: string) => setMinValueDraft(raw.replace(/\D/g, ""));
+
+  // 入力欄を離れた時点で 0〜CUTOFF_MAX_VALUE に丸めて確定する。空欄・数値でない入力は
+  // 直前の確定値へ戻す。確認ダイアログが要るケースは requestCutoff が判断する。
+  const commitMinValue = () => {
+    const n = Number.parseInt(minValueDraft, 10);
+    const v = Number.isNaN(n) ? minModuleValue : Math.min(Math.max(n, 0), CUTOFF_MAX_VALUE);
+    if (v === minModuleValue) {
+      setMinValueDraft(String(minModuleValue));
+      return;
+    }
+    setMinValueDraft(String(v));
+    requestCutoff(minQuality, v);
+  };
+
+  // 確認ダイアログのキャンセル時は、先行して書き換えていた入力欄の表示も確定値へ戻す。
+  const cancelCutoff = () => {
+    setPendingCutoff(null);
+    setMinValueDraft(String(minModuleValue));
+  };
+
+  const confirmCutoff = () => {
+    if (pendingCutoff) applyCutoff(pendingCutoff.quality, pendingCutoff.value);
+    setPendingCutoff(null);
   };
 
   const applyPreset = (p: SearchPreset) => {
@@ -373,15 +576,24 @@ export default function App() {
     // 旧プリセット（案A追加前）には rankMode が無いため、従来の唯一の順序 "link" へ
     // フォールバックする。壊れた値・未知の値も同様に "link" へ正規化する（S5）。
     const mode = normalizeRankMode(p.rankMode);
+    // 旧プリセットの topK は当時の選択肢（3/5/10）や上限変更前の値のまま入っている。
+    // 表示・探索の両方で同じ正規化値を使う。
+    const k = applyTopK(p.topK);
+    // 旧プリセット（切り捨て追加前）には無いため 0（絞り込みなし）へ正規化する。
+    // プリセット適用は本人が保存した設定の再現なので、確認ダイアログは出さない。
+    const minQ = normalizeCutoff(p.minQuality, CUTOFF_MAX_QUALITY);
+    const minVal = normalizeCutoff(p.minModuleValue, CUTOFF_MAX_VALUE);
     setSelection(p.selection);
     setRequireLevels(p.requireLevels);
     setCategory(p.category);
-    setTopK(p.topK);
     setSlotCount(slots);
     setHardExclude(hardExcl);
     setRankMode(mode);
+    setMinQuality(minQ);
+    setMinModuleValue(minVal);
+    setMinValueDraft(String(minVal));
     setTab("results");
-    runWith(p.selection, p.requireLevels, p.category, p.topK, slots, hardExcl, mode);
+    runWith(p.selection, p.requireLevels, p.category, k, slots, hardExcl, mode, minQ, minVal);
   };
 
   const savePreset = (name: string) =>
@@ -393,6 +605,8 @@ export default function App() {
       slotCount,
       hardExclude,
       rankMode,
+      minQuality,
+      minModuleValue,
     });
 
   const onReloadDump = async () => {
@@ -416,6 +630,9 @@ export default function App() {
   // 表示中の結果が、現在選択中の並び順モードを反映していないか（W2）。
   // 初回検索前（appliedRankMode===null）は「古い結果」自体が無いので対象外。
   const isRankModeStale = appliedRankMode !== null && rankMode !== appliedRankMode;
+  // 候補の切り捨てが有効か。有効な間は「所持全体の最適解ではないかもしれない」ことを
+  // 常時表示する（確認ダイアログは有効化の1回きりなので、それだけでは足りない）。
+  const cutoffActive = minQuality > 0 || minModuleValue > 0;
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
@@ -517,21 +734,24 @@ export default function App() {
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
               {t("section.topK")}
             </h2>
-            <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
-              {TOP_K_OPTIONS.map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setTopK(k)}
-                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
-                    topK === k
-                      ? "bg-indigo-500 text-white shadow"
-                      : "text-slate-300 hover:bg-slate-700/60"
-                  }`}
-                >
-                  {t("topK.option", { k })}
-                </button>
-              ))}
-            </div>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={TOP_K_MIN}
+              max={TOP_K_MAX}
+              step={1}
+              value={topKDraft}
+              onChange={(e) => onTopKInput(e.currentTarget.value)}
+              onBlur={commitTopKDraft}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+              aria-label={t("section.topK")}
+              className="h-8 w-full rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 text-xs font-medium text-slate-100 outline-none transition focus:border-indigo-500"
+            />
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
+              {t("topK.hint", { min: TOP_K_MIN, max: TOP_K_MAX })}
+            </p>
           </section>
 
           <section>
@@ -559,6 +779,54 @@ export default function App() {
               }`}
             >
               {isRankModeStale ? t("rankMode.staleHint") : t("rankMode.hint")}
+            </p>
+          </section>
+
+          <section>
+            <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-300">
+              {t("section.cutoff")}
+            </h2>
+            <div className="flex gap-1 rounded-lg bg-slate-800/60 p-1">
+              {MIN_QUALITY_OPTIONS.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => requestCutoff(q, minModuleValue)}
+                  className={`flex h-8 flex-1 items-center justify-center rounded-md text-xs font-medium transition ${
+                    minQuality === q
+                      ? "bg-indigo-500 text-white shadow"
+                      : "text-slate-300 hover:bg-slate-700/60"
+                  }`}
+                >
+                  {q === 0 ? t("cutoff.qualityAll") : t(`cutoff.quality${q}`)}
+                </button>
+              ))}
+            </div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="shrink-0 text-xs text-slate-400">{t("cutoff.minValue")}</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={CUTOFF_MAX_VALUE}
+                step={1}
+                value={minValueDraft}
+                onChange={(e) => onMinValueInput(e.currentTarget.value)}
+                onBlur={commitMinValue}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                aria-label={t("cutoff.minValue")}
+                className="h-8 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 text-xs font-medium text-slate-100 outline-none transition focus:border-indigo-500"
+              />
+            </div>
+            <p
+              className={`mt-1.5 text-xs leading-relaxed ${
+                cutoffActive ? "text-amber-400" : "text-slate-400"
+              }`}
+            >
+              {cutoffActive
+                ? t("cutoff.activeHint")
+                : t("cutoff.hint", { max: CUTOFF_MAX_VALUE })}
             </p>
           </section>
 
@@ -621,6 +889,14 @@ export default function App() {
                 </div>
               )}
 
+              {/* 目標属性が未選択で自動再探索をスキップした場合の告知。エラー(amber)と
+                  区別できるよう情報色(sky)にする。 */}
+              {modulesStale && (
+                <div className="mb-4 rounded-lg border border-sky-700/50 bg-sky-500/10 px-4 py-2.5 text-sm text-sky-200">
+                  {t("results.modulesStale")}
+                </div>
+              )}
+
               <ConditionSummary
                 attributes={attributes}
                 selection={selection}
@@ -647,6 +923,9 @@ export default function App() {
                         })}
                         {isRankModeStale && t("results.rankModeStale")}
                       </span>
+                    )}
+                    {cutoffActive && (
+                      <span className="text-amber-400"> ・{t("results.cutoffActive")}</span>
                     )}
                   </span>
                   {elapsedMs !== null && (
@@ -707,6 +986,15 @@ export default function App() {
       </div>
 
       {footerVisible && <Footer onHide={() => setFooterVisible(false)} />}
+
+      {pendingCutoff && (
+        <CutoffWarningDialog
+          quality={pendingCutoff.quality}
+          value={pendingCutoff.value}
+          onConfirm={confirmCutoff}
+          onCancel={cancelCutoff}
+        />
+      )}
     </div>
   );
 }

@@ -103,6 +103,10 @@ export interface SearchPreset {
   // ランキング順序モード。旧プリセット（本機能追加前）には存在しないため、適用側で
   // "link"（既定・従来の唯一の順序）にフォールバックする。
   rankMode: RankMode;
+  // 候補の切り捨て。旧プリセット（本機能追加前）には存在しないため、適用側で 0（無効）に
+  // フォールバックする。既定は常に無効＝所持すべてを候補にする。
+  minQuality: number;
+  minModuleValue: number;
   createdAt: number;
 }
 

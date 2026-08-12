@@ -25,12 +25,13 @@ From the modules you own, it brute-forces every combination of **4 or 5 slots** 
 - **Target / excluded attributes** — Click to pick the attribute you want to grow (click again to mark it as excluded).
 - **Per-attribute minimum level** — Narrow results with conditions like "this attribute must be at least Lv5."
 - **Category filter** — Filter by module type: Attack / Guard / Support.
-- **Top 3 / 5 / 10 view** — Lists each set's Lv6 count, Lv5 count, full attribute-level breakdown, and link effect (the sum of all attribute values).
+- **Adjustable result count (1–50)** — Lists each set's Lv6 count, Lv5 count, full attribute-level breakdown, and link effect (the sum of all attribute values).
+- **Candidate filter (optional, off by default)** — Drop modules you never use from the candidates by quality (Purple / Gold) or by total attribute value. It speeds up the search, but the best combination across all the modules you own may no longer appear, so enabling it asks for confirmation and the filtered state stays visible on screen.
 - **Presets** — Name and save frequently used search conditions and recall them with one click.
 - **Favorite builds** — Save setups you like with a ★. They can be named and managed, and multiple builds can be compared side by side.
 - **Build comparison** — Pick 2–3 from your favorites to display the attribute differences in parallel.
 - **Condition summary** — Shows the current search conditions as tags. Remove a condition on the spot via the × on a tag and re-search.
-- **Live auto-fetch & auto-research** — When module information updates, it loads automatically, and if conditions are already set, it re-runs the search automatically.
+- **Live auto-fetch & auto-research** — When module information updates, it loads automatically, and if target attributes are selected, it re-runs the search automatically (with no targets the search is slow, so it is skipped and reported on screen instead).
 - **Automatic state restore** — Saves the fetched modules and your last search conditions, restoring them on the next launch.
 - **JSON dump loading** — For environments where traffic cannot be captured, it can also load from `owned_modules.json`.
 - **Japanese / English UI** — Switch between Japanese and English with the header toggle (no restart needed).

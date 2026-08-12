@@ -41,14 +41,32 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.minLv": "属性ごとの下限Lv",
     "section.topK": "表示件数",
     "section.rankMode": "並び順",
+    "section.cutoff": "候補の絞り込み",
     "run": "最適化を実行",
-    "topK.option": "上位{k}",
+    "topK.hint": "{min}〜{max} 件の範囲で指定できます。",
     "slotCount.option": "{n}枠",
     "rankMode.link": "リンク効果優先",
     "rankMode.lv5": "Lv5数優先",
     "rankMode.hint": "並び順を変更したら「最適化を実行」を押し直してください（自動では再検索しません）。",
     "rankMode.staleHint":
       "並び順を変更しました。表示中の結果は反映されていません。「最適化を実行」を押してください。",
+    "cutoff.qualityAll": "すべて",
+    // 品質の呼称はゲーム内の色に合わせる（Q3=紫、Q4=金）。
+    "cutoff.quality3": "紫品質以上",
+    "cutoff.quality4": "金品質以上",
+    "cutoff.minValue": "合計値",
+    "cutoff.hint": "使わないモジュールを候補から外せます（合計値は 0〜{max}、0 で無効）。",
+    "cutoff.activeHint":
+      "候補を絞り込み中です。所持モジュール全体での最適な組み合わせが出ない可能性があります。",
+    "cutoff.warnTitle": "候補を絞り込みますか？",
+    "cutoff.warnBody":
+      "条件に合わないモジュールは探索の候補から外れます。所持しているモジュール全体での最適な組み合わせが、結果に出なくなる可能性があります。",
+    "cutoff.warnDetail": "適用する条件: {cond}",
+    "cutoff.condQuality": "品質は{label}",
+    "cutoff.warnQuality4":
+      "金品質のみへの絞り込みは特に影響が大きく、512個×5パターンの実測では 5 回中 4 回、1位の組み合わせが変わりました。目標にした属性を持つ金品質モジュールが少ないと、その属性が Lv6 に届かなくなります。",
+    "cutoff.condValue": "属性値の合計 {v} 以上",
+    "cutoff.warnConfirm": "絞り込む",
     "tab.results": "結果",
     "tab.favorites": "お気に入り",
     "results.summary":
@@ -56,6 +74,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "results.elapsed": "処理時間 {t}",
     "results.rankMode": "並び順: {mode}",
     "results.rankModeStale": "（未反映の変更あり）",
+    "results.modulesStale":
+      "所持モジュールが更新されましたが、目標属性が未選択のため自動再探索をスキップしました（目標なしの探索は所持数が多いと数十秒かかるため）。「最適化を実行」を押すと反映されます。",
+    "results.cutoffActive": "候補を絞り込み中",
     "empty.noModulesTitle": "所持モジュール未取得",
     "empty.noModulesDesc":
       "管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）",
@@ -155,8 +176,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "section.minLv": "Min Lv per Attribute",
     "section.topK": "Result Count",
     "section.rankMode": "Ranking Order",
+    "section.cutoff": "Candidate Filter",
     "run": "Run Optimization",
-    "topK.option": "Top {k}",
+    "topK.hint": "Between {min} and {max} results.",
     "slotCount.option": "{n} slots",
     "rankMode.link": "Link Effect First",
     "rankMode.lv5": "Lv5 Count First",
@@ -164,6 +186,22 @@ const DICT: Record<Lang, Record<string, string>> = {
       "After changing the order, press “Run Optimization” again (it does not re-search automatically).",
     "rankMode.staleHint":
       "You changed the order. The results shown don't reflect it yet — press “Run Optimization”.",
+    "cutoff.qualityAll": "All",
+    "cutoff.quality3": "Purple+",
+    "cutoff.quality4": "Gold+",
+    "cutoff.minValue": "Total",
+    "cutoff.hint": "Drop modules you never use from the candidates (total 0–{max}, 0 = off).",
+    "cutoff.activeHint":
+      "Candidates are filtered. The best combination across all your modules may not appear.",
+    "cutoff.warnTitle": "Filter the candidates?",
+    "cutoff.warnBody":
+      "Modules that don't meet the condition are excluded from the search. The best combination across all the modules you own may no longer appear in the results.",
+    "cutoff.warnDetail": "Condition: {cond}",
+    "cutoff.condQuality": "quality: {label}",
+    "cutoff.warnQuality4":
+      "Filtering to Gold only has the largest impact: across 512 modules × 5 datasets it changed the top result in 4 out of 5 cases. If few Gold modules carry your target attribute, that attribute may no longer reach Lv6.",
+    "cutoff.condValue": "total attribute value {v} or higher",
+    "cutoff.warnConfirm": "Filter",
     "tab.results": "Results",
     "tab.favorites": "Favorites",
     "results.summary":
@@ -171,6 +209,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "results.elapsed": "Time {t}",
     "results.rankMode": "Order: {mode}",
     "results.rankModeStale": " (pending re-run)",
+    "results.modulesStale":
+      "Your modules changed, but the automatic re-search was skipped because no target attribute is selected (a search without targets takes tens of seconds when you own many modules). Press “Run Optimization” to apply.",
+    "results.cutoffActive": "candidates filtered",
     "empty.noModulesTitle": "No modules captured yet",
     "empty.noModulesDesc":
       "Launch as administrator and change maps in-game to capture them (captured data is saved automatically and restored on the next launch).",

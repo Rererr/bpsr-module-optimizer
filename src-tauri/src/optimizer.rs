@@ -1238,6 +1238,140 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
 mod tests {
     use super::*;
 
+    /// 「候補の絞り込み」の上限（[`crate::MAX_MIN_MODULE_VALUE`] と品質 Q3）が、上位 top_k を
+    /// 全数探索と一致させたまま使える範囲に収まっていることを検証する。上限を引き上げる
+    /// ときは必ずこれを通すこと（緩めると最適解を静かに落とすようになる）。
+    ///
+    /// 壊れるのは常に「担い手の少ない属性を目標にしたケース」で、目標なし・一般目標なら
+    /// もっと強い絞り込みでも一致してしまう。3種類の目標すべてで確認するのはそのため
+    /// （平均的なデータだけで試すと安全に見えてしまう）。
+    ///
+    /// BENCH_DUMPS にカンマ区切りで複数のダンプを渡す（512件×5パターン推奨）。
+    /// 生成: node scripts/synthesize_dump.js testdata/owned_modules_230.json <出力> 512 <seed>
+    /// 実行が重い（1ダンプ十数分）ため #[ignore]。
+    #[test]
+    #[ignore]
+    fn cutoff_limits_preserve_topk() {
+        use std::time::Instant;
+        const TOP_K: usize = 10;
+        // 上限を超えると実際に壊れることの確認用（実測で 13 から1位が崩れた）。
+        // 一致してしまっても失敗にはしない（データ次第で偶然一致しうる）。
+        const OVER_LIMIT_VALUE: i32 = 13;
+        fn sum_v(m: &Module) -> i32 {
+            m.parts.iter().map(|p| p.value).sum()
+        }
+        // top-k の解集合（キー＋モジュールuuid）。基準との一致判定に使う。
+        fn fingerprint(r: &OptimizeResult) -> Vec<(usize, usize, usize, i32, Vec<i64>)> {
+            r.solutions
+                .iter()
+                .map(|s| {
+                    let mut u: Vec<i64> = s.modules.iter().map(|m| m.uuid).collect();
+                    u.sort_unstable();
+                    (
+                        s.selected_present,
+                        s.selected_lv6,
+                        s.lv6_count,
+                        s.eval_link,
+                        u,
+                    )
+                })
+                .collect()
+        }
+
+        let dumps_env = std::env::var("BENCH_DUMPS").expect("BENCH_DUMPS 未設定");
+        for (pi, path) in dumps_env.split(',').enumerate() {
+            let raw = std::fs::read_to_string(path.trim()).expect("ダンプ読み込み失敗");
+            let dumps: Vec<crate::DumpModule> = serde_json::from_str(&raw).expect("JSON 解析失敗");
+            let all: Vec<Module> = dumps.into_iter().map(Module::from).collect();
+
+            // 目標属性は担い手数で選ぶ。極属性(2xxx)は quality4 専用でカットの影響を受けない
+            // ため、通常属性(1xxx)だけを対象にする。
+            let mut count: HashMap<i32, usize> = HashMap::new();
+            for m in &all {
+                for p in &m.parts {
+                    if p.attr_id < 2000 {
+                        *count.entry(p.attr_id).or_insert(0) += 1;
+                    }
+                }
+            }
+            let mut by_count: Vec<(i32, usize)> = count.into_iter().collect();
+            by_count.sort_by_key(|&(id, c)| (c, id));
+            let rare: Vec<i32> = by_count.iter().take(2).map(|&(id, _)| id).collect();
+            let common: Vec<i32> = by_count.iter().rev().take(2).map(|&(id, _)| id).collect();
+            println!(
+                "== p{pi} n={} レア目標={rare:?}(担い手 {},{}) 一般目標={common:?}",
+                all.len(),
+                by_count[0].1,
+                by_count[1].1
+            );
+
+            let max_val = crate::MAX_MIN_MODULE_VALUE;
+            for (tname, sel) in [("なし", vec![]), ("レア", rare), ("一般", common)] {
+                let t0 = Instant::now();
+                let base = optimize(&all, &sel, None, &[], &[], &[], TOP_K, 5, RankMode::Link)
+                    .expect("探索失敗");
+                let base_fp = fingerprint(&base);
+                println!(
+                    "p{pi} {tname} 基準      : n={:3} {:>8}",
+                    base.candidate_count,
+                    format!("{:.2?}", t0.elapsed())
+                );
+
+                // bool = 上限内（＝top_k 完全一致を要求する）か。
+                let mut cases: Vec<(String, Vec<Module>, bool)> = Vec::new();
+                for (th, within) in [
+                    (max_val / 2, true),
+                    (max_val, true),
+                    (OVER_LIMIT_VALUE, false),
+                ] {
+                    cases.push((
+                        format!("合計>={th:2}"),
+                        all.iter().filter(|m| sum_v(m) >= th).cloned().collect(),
+                        within,
+                    ));
+                }
+                for (q, within) in [(3, true), (4, false)] {
+                    cases.push((
+                        format!("quality>={q}"),
+                        all.iter().filter(|m| m.quality >= q).cloned().collect(),
+                        within,
+                    ));
+                }
+
+                for (cname, mods, within) in &cases {
+                    let t0 = Instant::now();
+                    let r = optimize(mods, &sel, None, &[], &[], &[], TOP_K, 5, RankMode::Link)
+                        .expect("探索失敗");
+                    let fp = fingerprint(&r);
+                    let top1 = if fp.first() == base_fp.first() {
+                        "1位OK"
+                    } else {
+                        "1位NG"
+                    };
+                    let topk = if fp == base_fp { "top10OK" } else { "top10NG" };
+                    let detail = match (fp.first(), base_fp.first()) {
+                        (Some(a), Some(b)) if a != b => format!(
+                            " sel {}->{} selLv6 {}->{} lv6 {}->{} eval {}->{}",
+                            b.0, a.0, b.1, a.1, b.2, a.2, b.3, a.3
+                        ),
+                        _ => String::new(),
+                    };
+                    println!(
+                        "p{pi} {tname} {cname}{}: n={:3} {:>8} {top1} {topk}{detail}",
+                        if *within { "     " } else { "(上限超)" },
+                        r.candidate_count,
+                        format!("{:.2?}", t0.elapsed())
+                    );
+                    assert!(
+                        !*within || fp == base_fp,
+                        "上限内の絞り込みで上位{TOP_K}件が変わった [p{pi} {tname} {cname}]。\
+                         MAX_MIN_MODULE_VALUE / 品質の上限を見直すこと"
+                    );
+                }
+            }
+        }
+    }
+
     fn module(key: i64, config_id: i32, parts: &[(i32, i32)]) -> Module {
         Module {
             key,

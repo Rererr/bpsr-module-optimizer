@@ -478,6 +478,17 @@ fn select_character(
     Ok(count)
 }
 
+/// 候補の切り捨て（フロントの「候補の絞り込み」）で受け付ける上限。
+/// フロント `src/App.tsx` の `CUTOFF_MAX_QUALITY` / `CUTOFF_MAX_VALUE` と一致させること。
+///
+/// 上限の根拠（512件×5パターン・slot5・top_k=10 の実測。担い手の少ない属性を目標にした
+/// ケースを含む。詳細はプロジェクトメモリ optimizer-performance 参照）:
+/// - 属性値合計: 8 までは全パターンで上位10件が全数探索と完全一致。10〜12 で2位以下が
+///   崩れ始め、13 以上で1位が崩れた。候補一覧を見比べるアプリなので上位10件を基準に 8。
+/// - 品質: quality>=3 は 15/15 の条件で無傷。quality>=4 は 4/15 で1位が崩れた。
+const MAX_MIN_QUALITY: i32 = 4;
+const MAX_MIN_MODULE_VALUE: i32 = 8;
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn optimize(
@@ -495,6 +506,11 @@ async fn optimize(
     slot_count: usize,
     // ランキング順序モード。フロントは常に明示送信する。
     rank_mode: RankMode,
+    // 候補の切り捨て（ユーザーの明示的な意思表示。既定は無効＝すべて候補に含める）。
+    // 品質がこれ未満のモジュールを候補から外す。0/1 は実質無効（実データの下限は 2）。
+    min_quality: i32,
+    // 属性値の合計がこれ未満のモジュールを候補から外す。0 は無効。
+    min_module_value: i32,
 ) -> Result<OptimizeResult, String> {
     // MutexGuard を await をまたいで保持しないよう、先にモジュールを複製する。
     let modules = state
@@ -503,6 +519,16 @@ async fn optimize(
         .effective_char()
         .map(|c| c.modules.clone())
         .unwrap_or_default();
+    // 切り捨てはカテゴリ絞り込み・ハード除外と同じ「候補から外す」操作なので、探索
+    // ロジックには手を入れずここで候補集合を絞る（candidate_count もフィルタ後になる）。
+    // 上限はフロントの入力欄でも縛るが、コマンドは単体でも呼べるためここでも clamp する。
+    let min_quality = min_quality.clamp(0, MAX_MIN_QUALITY);
+    let min_module_value = min_module_value.clamp(0, MAX_MIN_MODULE_VALUE);
+    let modules: Vec<Module> = modules
+        .into_iter()
+        .filter(|m| m.quality >= min_quality)
+        .filter(|m| m.parts.iter().map(|p| p.value).sum::<i32>() >= min_module_value)
+        .collect();
     let top_k = top_k.clamp(1, 100);
     // 想定外の値は握り潰さず 4〜5 に丸める。
     let slot_count = slot_count.clamp(4, 5);
