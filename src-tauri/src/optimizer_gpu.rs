@@ -27,8 +27,8 @@
 //!    ループしながら [`crate::optimizer::Accum::add`]/`remove` と同じレベル遷移差分更新で
 //!    6カウンタを増分更新する（「1組合せ=1スレッド」方式で全スレッドが O(n) の unrank を
 //!    行っていたコストを、プレフィックスあたり1回に削減）。候補データはワークグループ共有
-//!    メモリへ協調ロードする。総プレフィックス数 P=C(n,slot_count-1) は n<=300 なら u32 に
-//!    確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
+//!    メモリへ協調ロードする。総プレフィックス数 P=C(n,slot_count-1) は n<=[`MAX_N`] なら
+//!    u32 に確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
 //!    プレフィックス確定後・末尾ループ開始前には、以下の**プレフィックス単位枝刈り**
 //!    （[`build_suffix_max_bytes`]、`Params.prune_enabled`でON/OFF切替可）も行う:
 //!    [`crate::optimizer::should_prune`] の r=1（残り1枠）相当の上界キーを suffix 最大値
@@ -55,8 +55,8 @@
 //! - n_attr > 32（キー packing・ビットマスクが u32 に収まらない）
 //! - top_k > 64
 //! - slot_count が 4/5 以外
-//! - n > [`MAX_N`]=300（プレフィックスを共有メモリへ協調ロードする候補データ配列の
-//!   固定長上限。optimize.wgsl の `MAX_N` と一致させること）
+//! - n > [`MAX_N`]=512（プレフィックスを共有メモリへ協調ロードする候補データ配列の
+//!   固定長上限。optimize.wgsl / optimize_chunked.wgsl の `MAX_N` と一致させること）
 //! - モジュールのパーツ数が GPU カーネルの前提（[`MAX_PARTS`]=3）を超える
 //!   （実データ・design docの前提は3だが、将来データが崩れた場合の安全弁として追加）
 //! - 属性値に負値が含まれる（キー packing は非負値を前提とするため。ゲーム側は常に非負の
@@ -119,9 +119,19 @@ fn eval_link_key_max(mode: RankMode) -> i64 {
 }
 
 /// GPUカーネルが候補データをワークグループ共有メモリへ協調ロードする際の固定長上限
-/// （optimize.wgsl の `MAX_N` と一致させること）。n がこれを超えたらCPUへフォールバックする。
-/// n<=300 なら slot5 のプレフィックス数 C(300,4)≈3.3億 も u32 に確実に収まる。
-const MAX_N: usize = 300;
+/// （optimize.wgsl / optimize_chunked.wgsl の `MAX_N` と一致させること）。n がこれを
+/// 超えたらCPUへフォールバックする。
+///
+/// 512 の根拠（次の2つを同時に満たす最大の切りの良い値）:
+/// - 共有メモリ: `512 * MAX_PARTS(3) * sizeof(CandPart)(8B)` = 12KiB。
+///   `wgpu::Limits::default()` の `max_compute_workgroup_storage_size` = 16KiB に収まる
+///   （300 のときは 7.2KiB）。カーネルは cand_parts 以外に共有メモリを確保しない。
+/// - u32: slot5 のプレフィックス数 C(512,4)≈28.3億が u32 上限(42.9億)に収まる。
+///   C(580,4) で u32 を超えるため、これ以上広げるならプレフィックス rank の u64 化が要る。
+///
+/// 実ユーザーから n=458（探索 164,298,093,596 通り = C(458,5)）の報告があり、300 では
+/// この規模がまるごと CPU フォールバックしていた。
+const MAX_N: usize = 512;
 
 /// CPUシードに requirements 属性ごとの上位を追加する件数（`build_seed_positions` 参照）。
 const SEED_TOP_PER_REQUIRED_ATTR: usize = 10;
@@ -1281,7 +1291,7 @@ fn dispatch_one_chunk(
 /// 関数は、生存者だけを stream compaction で密に集めてから本処理する2カーネル分離
 /// （optimize_chunked.wgsl の Kernel P → Kernel I → Kernel T）でこの限界を回避する。
 ///
-/// n<=300 全域を [`CHUNK_SIZE`] 単位のチャンクへ分割し、チャンク毎に P→I→T を実行する。
+/// n<=[`MAX_N`] 全域を [`CHUNK_SIZE`] 単位のチャンクへ分割し、チャンク毎に P→I→T を実行する。
 /// Kernel T の起動ワークグループ数は Kernel I が GPU 側で書いた indirect dispatch args
 /// から決まるため、チャンク間で CPU への読み戻しは発生しない（全チャンク投入後に
 /// 1回だけ appended/survivor_total を読み戻す）。各チャンクは個別に `queue.submit` するが、
@@ -1894,8 +1904,8 @@ fn run_gpu_search(
     });
 
     let table_cols = slot_count as u32;
-    // プレフィックス数 P = C(n, slot_count-1)。MAX_N=300 の事前フォールバック判定により
-    // u32 に確実に収まる（slot5・n=300 でも約3.3億）。
+    // プレフィックス数 P = C(n, slot_count-1)。MAX_N=512 の事前フォールバック判定により
+    // u32 に確実に収まる（slot5・n=512 でも約28.3億）。
     let prefix_count_u64 = optimizer::n_choose_k(n, slot_count - 1);
     if prefix_count_u64 > u32::MAX as u64 {
         return Err(format!(
@@ -2700,6 +2710,104 @@ mod tests {
     /// window でしか発生しないため。本テストはそれでも「重複 offer が実際に起きる条件」
     /// を固定した回帰テストとして、[`merge_topk_for_refinement`] の dedup ロジックが
     /// 今後のリファクタで壊れた場合に検出できる状態を維持する。
+    /// n=[`MAX_N`] × requirements 付きの重い条件で、GPU が TDR（Windows の Timeout Detection
+    /// and Recovery。既定2秒で GPU をリセットする）に陥らず GPU 経路のまま完走し、結果が
+    /// CPU と一致することを検証する。
+    ///
+    /// TDR が起きると wgpu はデバイスロストになり [`cpu_fallback`] へ落ちるため、
+    /// `expect_engine="gpu"` の assert が失敗することで検出できる（黙って遅くなるのではなく
+    /// テストが落ちる）。MAX_N を 300→512 へ広げた際、過去に「N=500案はTDRリスク」で
+    /// 却下された経緯があるため、requirements 付きの条件まで含めて確認する。
+    ///
+    /// 重い条件の作り方: **担い手が多い属性へ緩い下限Lv**。requirements は
+    /// [`optimizer::prepare`] の担い手先頭並び替えで枝刈り率が上がる（99%まで届く）が、
+    /// それは担い手が少ないときの話で、担い手が多く下限Lvが緩いほど生存プレフィックスが
+    /// 残り Kernel T の 1 dispatch が長くなる＝TDR に最も近づく。
+    ///
+    /// BPSR_MODULE_DUMP_512 必須。実GPU必須のため #[ignore]。
+    #[test]
+    #[ignore]
+    fn gpu_no_tdr_with_requirements_at_max_n() {
+        use std::collections::HashMap;
+        let _ = env_logger::builder().is_test(true).try_init();
+        let path = std::env::var("BPSR_MODULE_DUMP_512")
+            .expect("BPSR_MODULE_DUMP_512 を設定してください（MAX_N と同じ件数のダンプ）");
+        let modules = load_dump(&path);
+        assert_eq!(modules.len(), MAX_N, "MAX_N と同じ件数のダンプを指定すること");
+
+        // 担い手の多い属性ほど requirements の枝刈りが効かず、生存プレフィックスが多く残る。
+        let mut count: HashMap<i32, usize> = HashMap::new();
+        for m in &modules {
+            for p in &m.parts {
+                *count.entry(p.attr_id).or_insert(0) += 1;
+            }
+        }
+        let mut by_count: Vec<(i32, usize)> = count.into_iter().collect();
+        by_count.sort_by_key(|&(id, c)| (std::cmp::Reverse(c), id));
+        let top: Vec<i32> = by_count.iter().take(3).map(|&(id, _)| id).collect();
+        eprintln!(
+            "[tdr] n={} 担い手上位: {:?}",
+            modules.len(),
+            &by_count[..3.min(by_count.len())]
+        );
+
+        // 緩い→厳しい順。緩いほど生存が多く 1 dispatch が長い＝TDR に近い。
+        let cases: Vec<(&str, Vec<i32>, Vec<(i32, usize)>)> = vec![
+            ("req_lv1_single", vec![], vec![(top[0], 1)]),
+            ("req_lv1_triple", vec![], vec![(top[0], 1), (top[1], 1), (top[2], 1)]),
+            ("req_lv3_double", vec![], vec![(top[0], 3), (top[1], 2)]),
+            ("req_lv1_with_target", vec![top[0], top[1]], vec![(top[0], 1)]),
+        ];
+        for (label, selected, reqs) in &cases {
+            assert_gpu_matches_cpu(
+                &modules,
+                selected,
+                &[],
+                &[],
+                reqs,
+                10,
+                5,
+                Some("gpu"),
+                &format!("n{MAX_N} slot5 {label}"),
+            );
+        }
+    }
+
+    /// [`MAX_N`] の境界ちょうどの n で、(1) WGSL が共有メモリ上限内でコンパイルでき、
+    /// (2) CPU フォールバックせず GPU 経路に載り、(3) 結果が CPU と完全一致することを検証する。
+    /// MAX_N を動かしたら必ずこれを通すこと（共有メモリ量とプレフィックス数の u32 収まりは
+    /// 実行時にしか分からず、超過すると CPU フォールバックへ黙って落ちるため）。
+    ///
+    /// BPSR_MODULE_DUMP_512 必須
+    /// （`node scripts/synthesize_dump.js testdata/owned_modules_230.json <出力> 512 1` で生成）。
+    /// 実GPU必須のため #[ignore]。
+    #[test]
+    #[ignore]
+    fn gpu_matches_cpu_at_max_n() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let path = std::env::var("BPSR_MODULE_DUMP_512")
+            .expect("BPSR_MODULE_DUMP_512 を設定してください（MAX_N と同じ件数のダンプ）");
+        let modules = load_dump(&path);
+        assert_eq!(
+            modules.len(),
+            MAX_N,
+            "MAX_N と同じ件数のダンプを指定すること（境界の検証が目的）"
+        );
+        for &slot in &[4usize, 5usize] {
+            assert_gpu_matches_cpu(
+                &modules,
+                &[],
+                &[],
+                &[],
+                &[],
+                10,
+                slot,
+                Some("gpu"),
+                &format!("n{MAX_N} slot{slot}"),
+            );
+        }
+    }
+
     /// BPSR_MODULE_DUMP_200 必須（scratchpad の gen_modules.py で n=200 を生成）。
     /// 実GPU必須のため #[ignore]。
     #[test]
@@ -3074,23 +3182,35 @@ mod tests {
         );
     }
 
-    /// 境界: n=301（GPU の [`MAX_N`]=300 を1件超える）で CPU フォールバックが維持される
-    /// こと（`engine=="cpu"`）と、結果自体が CPU 直接呼び出しと一致することを検証する。
-    /// BPSR_MODULE_DUMP_301 必須。実GPU必須のため #[ignore]。
+    /// 境界: n が [`MAX_N`] を1件超えると CPU フォールバックが維持されること
+    /// （`engine=="cpu"`）と、結果自体が CPU 直接呼び出しと一致することを検証する。
+    /// MAX_N を動かしたらダンプの件数も MAX_N+1 に作り直すこと（件数を直値で持たず
+    /// MAX_N から導くのは、片方だけ更新して「境界を検証しているつもり」になるのを防ぐため）。
+    ///
+    /// BPSR_MODULE_DUMP_OVER_MAX_N 必須
+    /// （`node scripts/synthesize_dump.js testdata/owned_modules_230.json <出力> 513 1` で生成）。
+    /// 実GPU必須のため #[ignore]。
     #[test]
     #[ignore]
-    fn gpu_falls_back_to_cpu_at_n301() {
+    fn gpu_falls_back_to_cpu_over_max_n() {
         let _ = env_logger::builder().is_test(true).try_init();
-        let path = std::env::var("BPSR_MODULE_DUMP_301").expect("BPSR_MODULE_DUMP_301が必要");
+        let path = std::env::var("BPSR_MODULE_DUMP_OVER_MAX_N")
+            .expect("BPSR_MODULE_DUMP_OVER_MAX_N が必要（MAX_N+1 件のダンプ）");
         let modules = load_dump(&path);
-        assert_eq!(modules.len(), 301, "データセットは301件である必要がある");
+        assert_eq!(
+            modules.len(),
+            MAX_N + 1,
+            "データセットは MAX_N+1 件である必要がある"
+        );
 
         for mode in [RankMode::Link, RankMode::Lv5] {
             let gpu = optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5, mode)
                 .expect("optimize failed");
             assert_eq!(
-                gpu.engine, "cpu",
-                "n=301はMAX_N=300を超えるためCPUフォールバックするはず mode={mode:?}"
+                gpu.engine,
+                "cpu",
+                "n={} は MAX_N={MAX_N} を超えるため CPU フォールバックするはず mode={mode:?}",
+                modules.len()
             );
 
             let cpu = optimizer::optimize(&modules, &[], Some("all"), &[], &[], &[], 10, 5, mode)

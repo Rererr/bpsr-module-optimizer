@@ -10,7 +10,7 @@
 // 増分更新する。これにより「1組合せ=1スレッド」方式で全スレッドが O(n) の combinadic
 // unrank（binomのグローバル読みが発散）を行っていたコストを、プレフィックスあたり1回
 // （高々 slot_count-1 回の探索）に削減する。総プレフィックス数 P=C(n,slot_count-1) は
-// n<=300 なら u32 に確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
+// n<=MAX_N(512) なら u32 に確実に収まるため、チャンク分割は不要（1ディスパッチで完結する）。
 //
 // プレフィックス単位枝刈り（Params.prune_enabled でON/OFF切替）: プレフィックスの6カウンタ
 // 計算後・末尾ループ開始前に、optimizer.rs の should_prune の r=1（残り1枠のみ）相当の
@@ -30,8 +30,8 @@ const MAX_ATTR: u32 = 32u;
 const CAPACITY: u32 = 2097152u;
 const NO_PART: u32 = 0xFFFFFFFFu;
 // ワークグループ共有メモリへロードする候補データの上限件数。optimizer_gpu.rs の
-// フォールバック判定（n>300 でCPUへ委譲）と一致させること。
-const MAX_N: u32 = 300u;
+// フォールバック判定（n>512 でCPUへ委譲）と一致させること。
+const MAX_N: u32 = 512u;
 const CAND_BUF_LEN: u32 = MAX_N * MAX_PARTS;
 // プレフィックス長の上限（slot_count-1、slot_count<=5 なので最大4）。
 const MAX_PREFIX: u32 = 4u;
@@ -78,7 +78,8 @@ struct Params {
 // [attr_suffix_max: n_attr*(n+1) i32] ++ [w_suffix_max: (n+1) i32]
 @group(0) @binding(6) var<storage, read> suffix_max: array<i32>;
 
-// 候補データのワークグループ共有メモリキャッシュ（協調ロード。300*3*8B=7.2KB）。
+// 候補データのワークグループ共有メモリキャッシュ（協調ロード。512*3*8B=12KiB。
+// wgpu::Limits::default() の max_compute_workgroup_storage_size=16KiB に収める）。
 // 末尾ループのグローバルメモリ読みをワークグループ内で共有し、メモリ律速を緩和する。
 var<workgroup> cand_parts: array<CandPart, CAND_BUF_LEN>;
 

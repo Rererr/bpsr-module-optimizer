@@ -41,8 +41,8 @@ const MAX_ATTR: u32 = 32u;
 const CAPACITY: u32 = 2097152u;
 const NO_PART: u32 = 0xFFFFFFFFu;
 // ワークグループ共有メモリへロードする候補データの上限件数。optimizer_gpu.rs の
-// フォールバック判定（n>300 でCPUへ委譲）・optimize.wgsl の MAX_N と一致させること。
-const MAX_N: u32 = 300u;
+// フォールバック判定（n>512 でCPUへ委譲）・optimize.wgsl の MAX_N と一致させること。
+const MAX_N: u32 = 512u;
 const CAND_BUF_LEN: u32 = MAX_N * MAX_PARTS;
 // プレフィックス長の上限（slot_count-1、slot_count<=5 なので最大4）。
 const MAX_PREFIX: u32 = 4u;
@@ -100,7 +100,7 @@ struct Params {
 
 // 候補データのワークグループ共有メモリキャッシュ（協調ロード）。main_p/main_t の両方で
 // 使い回す（ディスパッチが異なれば内容も独立するため競合しない。変数を分けて二重確保
-// しないことで共有メモリ使用量を確実に単一カーネル分（300*3*8B=7.2KB）に抑える）。
+// しないことで共有メモリ使用量を確実に単一カーネル分（512*3*8B=12KiB）に抑える）。
 var<workgroup> cand_parts: array<CandPart, CAND_BUF_LEN>;
 
 // optimizer.rs の ATTR_THRESHOLDS = [1, 4, 8, 12, 16, 20] を定数展開したもの。
