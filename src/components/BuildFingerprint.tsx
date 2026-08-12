@@ -1,15 +1,15 @@
 import type { Module } from "../types";
 import { useI18n } from "../i18n";
 
-// モジュール品質 → 塗り色（SolutionCard の品質配色と対応）。
+// モジュール品質 → 塗り色（SolutionCard の品質配色と対応。Q4=金 / Q3=紫 / Q2=青）。
 function qualityFill(q: number): string {
   switch (q) {
     case 4:
-      return "bg-purple-400";
+      return "bg-amber-400";
     case 3:
-      return "bg-sky-400";
+      return "bg-purple-400";
     case 2:
-      return "bg-emerald-400";
+      return "bg-sky-400";
     default:
       return "bg-slate-500";
   }

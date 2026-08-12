@@ -12,14 +12,16 @@ interface Props {
   onToggleFavorite?: () => void; // 指定時のみ★トグルを表示
 }
 
+// モジュール品質 → 配色。ゲーム内の品質色に合わせる（Q4=金 / Q3=紫 / Q2=青）。
+// 「候補の絞り込み」の呼称（紫品質以上・金品質以上）と対応させること。
 function qualityColor(q: number): string {
   switch (q) {
     case 4:
-      return "text-purple-300 border-purple-500/40 bg-purple-500/10";
+      return "text-amber-300 border-amber-500/40 bg-amber-500/10";
     case 3:
-      return "text-sky-300 border-sky-500/40 bg-sky-500/10";
+      return "text-purple-300 border-purple-500/40 bg-purple-500/10";
     case 2:
-      return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
+      return "text-sky-300 border-sky-500/40 bg-sky-500/10";
     default:
       return "text-slate-300 border-slate-600 bg-slate-700/30";
   }
