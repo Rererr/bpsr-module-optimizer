@@ -128,7 +128,7 @@ pub struct EntityAppear {
     #[prost(message, optional, tag = "3")]
     pub attrs: ::core::option::Option<EntityAttrs>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InvItem {
     #[prost(int64, tag = "1")]
     pub uuid: i64,
@@ -138,12 +138,24 @@ pub struct InvItem {
     pub quality: i32,
     #[prost(message, optional, tag = "13")]
     pub mod_new_attr: ::core::option::Option<ModuleAttrs>,
+    /// Per-attribute values of a module (attr_id -> value). Added by the game update
+    /// of 2026-10-29; it replaced ModuleSet.mod_infos\[key\].init_link_nums.
+    /// Field names are ours (not in the reference zproto definitions).
+    #[prost(message, optional, tag = "21")]
+    pub mod_part_values: ::core::option::Option<ModulePartValues>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ModulePartValues {
+    #[prost(map = "int32, int32", tag = "1")]
+    pub values: ::std::collections::HashMap<i32, i32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InvBags {
     #[prost(map = "int32, message", tag = "1")]
     pub packages: ::std::collections::HashMap<i32, InvBag>,
 }
+/// mod_infos is no longer sent since the 2026-10-29 game update (only field 1 remains).
+/// Kept as a fallback for older captures/servers.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ModuleSet {
     #[prost(map = "int64, message", tag = "2")]

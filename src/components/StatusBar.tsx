@@ -42,7 +42,9 @@ export function StatusBar({
   // 選択肢を見せるだけになるため。ファイルは残るのでデータ損失はない。
   // ただし有効キャラが擬似キャラ自身のとき（BPSR_MODULE_DUMP 指定中）は隠さない。
   // 有効キャラが選択肢に無いと <select> の値が宙に浮く。
-  const hasRealCharacter = allCharacters.some((c) => c.char_id !== "0");
+  // 数えるのはモジュールを持つ実キャラだけ。属性値を読めないまま検知された 0 件の実キャラ
+  // しかいない時は、擬似キャラが唯一使えるデータなので隠さない。
+  const hasRealCharacter = allCharacters.some((c) => c.char_id !== "0" && c.module_count > 0);
   const characters = allCharacters.filter(
     (c) => c.char_id !== "0" || !hasRealCharacter || status?.selected_char_id === "0",
   );

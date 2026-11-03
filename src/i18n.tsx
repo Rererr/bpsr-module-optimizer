@@ -77,6 +77,18 @@ const DICT: Record<Lang, Record<string, string>> = {
     "results.modulesStale":
       "所持モジュールが更新されましたが、目標属性が未選択のため自動再探索をスキップしました（目標なしの探索は所持数が多いと数十秒かかるため）。「最適化を実行」を押すと反映されます。",
     "results.cutoffActive": "候補を絞り込み中",
+    "valueIssue.missingTitle": "モジュールの属性値を読み取れません",
+    "valueIssue.missingDetailStale":
+      "今回の通信で見つかった {total} 件のモジュールすべてで、属性値を読み取れませんでした。ゲームの更新で通信形式が変わった可能性があります。表示中のモジュールと探索結果は前回正しく読み取れたときのデータに基づいており、最新の所持状況ではありません。",
+    "valueIssue.missingDetailEmpty":
+      "今回の通信で見つかった {total} 件のモジュールすべてで、属性値を読み取れませんでした。ゲームの更新で通信形式が変わった可能性があります。正しく読み取れたデータが無いため探索できません。",
+    "valueIssue.partialTitle": "一部のモジュールの属性値を読み取れません",
+    "valueIssue.partialDetail":
+      "{total} 件中 {affected} 件のモジュールで、属性値の一部を読み取れませんでした。欠けた属性の分だけ該当モジュールが低く評価されるため、結果が最適でない可能性があります。",
+    "valueIssue.checkRelease": "最新版を確認",
+    "valueIssue.openFailed": "ブラウザを開けませんでした。次の URL をブラウザに貼り付けてください:",
+    "empty.noModulesDescValueIssue":
+      "モジュールは検知できましたが、属性値を読み取れなかったため取り込んでいません（上の警告を参照）。",
     "empty.noModulesTitle": "所持モジュール未取得",
     "empty.noModulesDesc":
       "管理者権限でゲームのマップ移動で取得してください（取得後は自動保存され、次回起動時に復元されます）",
@@ -212,6 +224,18 @@ const DICT: Record<Lang, Record<string, string>> = {
     "results.modulesStale":
       "Your modules changed, but the automatic re-search was skipped because no target attribute is selected (a search without targets takes tens of seconds when you own many modules). Press “Run Optimization” to apply.",
     "results.cutoffActive": "candidates filtered",
+    "valueIssue.missingTitle": "Can't read module attribute values",
+    "valueIssue.missingDetailStale":
+      "No attribute values could be read for any of the {total} modules found in this capture. A game update may have changed the data format. The modules shown and the search results are based on the last successful read, not on what you own now.",
+    "valueIssue.missingDetailEmpty":
+      "No attribute values could be read for any of the {total} modules found in this capture. A game update may have changed the data format. There is no successfully read data, so the search can't run.",
+    "valueIssue.partialTitle": "Can't read attribute values for some modules",
+    "valueIssue.partialDetail":
+      "Some attribute values could not be read for {affected} of {total} modules. Each missing attribute lowers that module's score, so the results may not be optimal.",
+    "valueIssue.checkRelease": "Check latest version",
+    "valueIssue.openFailed": "Couldn't open the browser. Paste this URL into your browser:",
+    "empty.noModulesDescValueIssue":
+      "Modules were detected, but their attribute values couldn't be read, so they weren't imported (see the warning above).",
     "empty.noModulesTitle": "No modules captured yet",
     "empty.noModulesDesc":
       "Launch as administrator and change maps in-game to capture them (captured data is saved automatically and restored on the next launch).",
