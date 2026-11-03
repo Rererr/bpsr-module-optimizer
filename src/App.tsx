@@ -246,6 +246,30 @@ export default function App() {
   // （backend の selected_char_id: Option<i64> が None のままでも、たまたま自動解決が
   // 保存値と同じ id を指すことがある）ため、id が一致していても必ず select_character を
   // 呼んで明示的に固定する（同一 id への再選択は冪等）。
+  // 探索の世代。結果を片付けた（キャラ切替・0 件化）後に、それ以前に始めた探索が
+  // 完了して古い結果を書き戻さないよう、開始時の世代と一致する時だけ反映する。
+  const searchGenRef = useRef(0);
+  // 実行中の探索数。バックエンドの探索は中断できないので、結果を捨てた探索も終わるまで
+  // 実行中表示（＝実行ボタン無効）を保ち、重い探索を並べて走らせない。
+  const inflightRef = useRef(0);
+  // 「結果が古い」を立てた時点の世代。それ以前に始めた探索の完了では印を下ろさない
+  // （変更前のモジュールで出した結果なので古いまま）。
+  const staleSinceGenRef = useRef(-1);
+
+  // 結果を片付ける唯一の入口（キャラ切替・保存選択の復元・0 件化）。
+  const discardResults = useCallback(() => {
+    searchGenRef.current += 1;
+    setResult(null);
+    setElapsedMs(null);
+    setAppliedRankMode(null);
+    setError(null);
+  }, []);
+
+  const markModulesStale = useCallback(() => {
+    staleSinceGenRef.current = searchGenRef.current;
+    setModulesStale(true);
+  }, []);
+
   const tryRestoreSelectedCharacter = useCallback((st: StatusDto) => {
     if (restoredSelectionRef.current) return;
     const savedCharId = loadJSON<string | null>(STORAGE_KEYS.selectedCharId, null);
@@ -256,14 +280,11 @@ export default function App() {
     if (!st.characters.some((c) => c.char_id === savedCharId)) return;
     restoredSelectionRef.current = true;
     // 他キャラの結果を残さない（onSelectCharacter と同じリセットを通す）。
-    setResult(null);
-    setElapsedMs(null);
-    setAppliedRankMode(null);
-    setError(null);
+    discardResults();
     selectCharacter(savedCharId)
       .then(() => captureStatus().then(setStatus).catch(() => {}))
       .catch((e) => setError(String(e)));
-  }, []);
+  }, [discardResults]);
 
   const refreshStatus = useCallback(() => {
     captureStatus()
@@ -283,18 +304,6 @@ export default function App() {
     hasTargetRef.current = targetIds.length > 0;
   }, [targetIds]);
 
-  // 探索の世代。結果を片付けた（キャラ切替・0 件化）後に、それ以前に始めた探索が
-  // 完了して古い結果を書き戻さないよう、開始時の世代と一致する時だけ反映する。
-  const searchGenRef = useRef(0);
-  const discardResults = useCallback(() => {
-    searchGenRef.current += 1;
-    setResult(null);
-    setElapsedMs(null);
-    setAppliedRankMode(null);
-    setError(null);
-    setLoading(false);
-  }, []);
-
   // 明示的に渡した条件で探索する（プリセット適用・条件解除でも再利用）。
   const runWith = useCallback(
     async (
@@ -310,6 +319,7 @@ export default function App() {
     ) => {
       const gen = ++searchGenRef.current;
       const isCurrent = () => gen === searchGenRef.current;
+      inflightRef.current += 1;
       setError(null);
       setLoading(true);
       try {
@@ -345,7 +355,7 @@ export default function App() {
         setElapsedMs(performance.now() - startedAt);
         setResult(res);
         setAppliedRankMode(mode);
-        setModulesStale(false);
+        if (gen > staleSinceGenRef.current) setModulesStale(false);
         if (res.solutions.length === 0) {
           setError(
             res.candidate_count < slots
@@ -361,8 +371,9 @@ export default function App() {
         setResult(null);
         setElapsedMs(null);
       } finally {
-        // 古い探索の完了で、新しい探索の実行中表示を消さない。
-        if (isCurrent()) setLoading(false);
+        // 結果を捨てた探索も含め、全部終わってから実行中表示を消す。
+        inflightRef.current -= 1;
+        if (inflightRef.current === 0) setLoading(false);
       }
     },
     [t],
@@ -423,7 +434,7 @@ export default function App() {
       // 手動実行に委ねる（select_character もキャラ切替の都度これを emit するため、
       // 抑止しないとキャラを切り替えるだけで最悪ケースが走る）。
       if (!hasTargetRef.current) {
-        setModulesStale(true);
+        markModulesStale();
         return;
       }
       runRef.current();
@@ -438,7 +449,7 @@ export default function App() {
       unModules.then((f) => f());
       unCharacters.then((f) => f());
     };
-  }, [refreshStatus, discardResults]);
+  }, [refreshStatus, discardResults, markModulesStale]);
 
   // ユーザーの明示選択。保存値の上書きはここだけで行う（復元側は保存値を書き換えない）。
   // status?.selected_char_id は自動解決の結果に過ぎず「既に固定済み」を意味しない

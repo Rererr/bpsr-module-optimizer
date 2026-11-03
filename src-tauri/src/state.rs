@@ -107,7 +107,7 @@ impl Inner {
     ///
     /// 有効キャラが変わったら true を返す。他に実キャラがいない状態（擬似キャラ char_id=0
     /// だけを見ている等）で初検知のキャラが現れると、優先順位により有効キャラがそちらへ
-    /// 移るため、呼び出し側は再探索通知（modules-updated）を出してフロントの古い結果を
+    /// 移るため、呼び出し側は結果のリセット通知（modules-updated, payload 0）を出してフロントの古い結果を
     /// 片付ける必要がある。
     /// `total` は今回のキャプチャで見つかったモジュール数（`ValueIssue::Missing` の件数）。
     /// `ValueIssue` ごと受け取らないのは、`Partial` を誤って渡せないようにするため。
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn record_value_missing_reports_effective_switch_from_pseudo_char() {
         // 擬似キャラ（char_id=0）だけを見ている状態で初検知の実キャラが現れると、
-        // 優先順位で有効キャラがそちらへ移る。呼び出し側が再探索を通知できるよう true。
+        // 優先順位で有効キャラがそちらへ移る。呼び出し側が結果のリセットを通知できるよう true。
         let mut s = Inner {
             chars: vec![entry_with_source(0, "", 5, "dump")],
             ..Default::default()
