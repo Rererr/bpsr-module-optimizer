@@ -4,7 +4,8 @@
 //! - `PlayerSnapshot.item_package.packages[].items[key]` … バッグ内アイテム。
 //!   `mod_new_attr.mod_parts` を持つものがモジュール。`mod_parts[i]` = i 番目の属性ID。
 //! - item の `mod_part_values.values[attr_id]`（InvItem の field 21）… 属性値。
-//!   2026-10-29 のゲーム更新で導入。並びは `mod_parts` と一致しないので attr_id で引く。
+//!   2026-08-31〜11-04 の間のゲーム更新で導入（正確な配信日は未確認）。並びは
+//!   `mod_parts` と一致しないので attr_id で引く。
 //! - `PlayerSnapshot.r#mod.mod_infos[key].init_link_nums[i]` … 更新前の属性値（同 key・同 i）。
 //!   更新後は送られないが、`mod_part_values` が無いときのフォールバックとして残す。
 //! - item の `config_id` / `uuid` / `quality` … モジュール種別・固有ID・品質。
@@ -82,7 +83,7 @@ pub fn parse_modules(snapshot: &pb::PlayerSnapshot) -> ParsedModules {
             }
 
             let parts: Vec<ModulePart> = match item.mod_part_values.as_ref() {
-                // 2026-10-29 のゲーム更新以降: 値は item 自身に attr_id → 値 で載る。
+                // 上記のゲーム更新以降: 値は item 自身に attr_id → 値 で載る。
                 // 並びは mod_parts と一致しないため、位置ではなく attr_id で引く。
                 // 値の無い属性は除外する（更新前の zip による切り詰めと同じ扱い）。
                 Some(pv) if !pv.values.is_empty() => {

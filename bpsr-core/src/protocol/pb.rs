@@ -138,8 +138,10 @@ pub struct InvItem {
     pub quality: i32,
     #[prost(message, optional, tag = "13")]
     pub mod_new_attr: ::core::option::Option<ModuleAttrs>,
-    /// Per-attribute values of a module (attr_id -> value). Added by the game update
-    /// of 2026-10-29; it replaced ModuleSet.mod_infos\[key\].init_link_nums.
+    /// Per-attribute values of a module (attr_id -> value). Added by a game update
+    /// between 2026-08-31 and 2026-11-04 (the latest old-format capture and the
+    /// new-format capture we have; the exact release date is unverified); it replaced
+    /// ModuleSet.mod_infos\[key\].init_link_nums.
     /// Field names are ours (not in the reference zproto definitions).
     #[prost(message, optional, tag = "21")]
     pub mod_part_values: ::core::option::Option<ModulePartValues>,
@@ -154,7 +156,7 @@ pub struct InvBags {
     #[prost(map = "int32, message", tag = "1")]
     pub packages: ::std::collections::HashMap<i32, InvBag>,
 }
-/// mod_infos is no longer sent since the 2026-10-29 game update (only field 1 remains).
+/// mod_infos is no longer sent since that game update (only field 1 remains).
 /// Kept as a fallback for older captures/servers.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ModuleSet {
