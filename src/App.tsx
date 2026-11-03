@@ -21,6 +21,7 @@ import { useI18n } from "./i18n";
 import { usePresets } from "./hooks/usePresets";
 import { useFavorites } from "./hooks/useFavorites";
 import { StatusBar } from "./components/StatusBar";
+import { ValueIssueBanner } from "./components/ValueIssueBanner";
 import { AttributePicker } from "./components/AttributePicker";
 import { RequirementList } from "./components/RequirementList";
 import { SolutionCard } from "./components/SolutionCard";
@@ -282,6 +283,18 @@ export default function App() {
     hasTargetRef.current = targetIds.length > 0;
   }, [targetIds]);
 
+  // 探索の世代。結果を片付けた（キャラ切替・0 件化）後に、それ以前に始めた探索が
+  // 完了して古い結果を書き戻さないよう、開始時の世代と一致する時だけ反映する。
+  const searchGenRef = useRef(0);
+  const discardResults = useCallback(() => {
+    searchGenRef.current += 1;
+    setResult(null);
+    setElapsedMs(null);
+    setAppliedRankMode(null);
+    setError(null);
+    setLoading(false);
+  }, []);
+
   // 明示的に渡した条件で探索する（プリセット適用・条件解除でも再利用）。
   const runWith = useCallback(
     async (
@@ -295,6 +308,8 @@ export default function App() {
       minQ: number,
       minVal: number,
     ) => {
+      const gen = ++searchGenRef.current;
+      const isCurrent = () => gen === searchGenRef.current;
       setError(null);
       setLoading(true);
       try {
@@ -326,6 +341,7 @@ export default function App() {
           minQuality: minQ,
           minModuleValue: minVal,
         });
+        if (!isCurrent()) return; // 片付け済み or より新しい探索がある
         setElapsedMs(performance.now() - startedAt);
         setResult(res);
         setAppliedRankMode(mode);
@@ -340,11 +356,13 @@ export default function App() {
           );
         }
       } catch (e) {
+        if (!isCurrent()) return;
         setError(String(e));
         setResult(null);
         setElapsedMs(null);
       } finally {
-        setLoading(false);
+        // 古い探索の完了で、新しい探索の実行中表示を消さない。
+        if (isCurrent()) setLoading(false);
       }
     },
     [t],
@@ -389,8 +407,16 @@ export default function App() {
     refreshStatus();
 
     const timer = setInterval(refreshStatus, 2000);
-    const unModules = listen<number>("modules-updated", () => {
+    const unModules = listen<number>("modules-updated", (ev) => {
       refreshStatus();
+      // 0 件（属性値が読めないまま初検知のキャラへ切り替わった等）では探索できない。
+      // 走らせると「条件を緩めて」という的外れなエラーになるので、別キャラのデータで
+      // 出した古い結果を片付けるだけにする（理由はバナーと空状態が説明する）。
+      if (ev.payload === 0) {
+        discardResults();
+        setModulesStale(false);
+        return;
+      }
       // 目標属性が未選択のときは自動再探索しない。目標なしの探索は B&B の上界が緩く
       // 最悪ケースになり（所持458件の実測で目標あり4.5s に対し目標なし41.6s）、装備を
       // 変えるたびに数十秒 CPU を占有してしまう。代わりに「結果が古い」ことを示して
@@ -412,7 +438,7 @@ export default function App() {
       unModules.then((f) => f());
       unCharacters.then((f) => f());
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, discardResults]);
 
   // ユーザーの明示選択。保存値の上書きはここだけで行う（復元側は保存値を書き換えない）。
   // status?.selected_char_id は自動解決の結果に過ぎず「既に固定済み」を意味しない
@@ -421,11 +447,8 @@ export default function App() {
   const onSelectCharacter = async (charId: string) => {
     if (!charId) return;
     restoredSelectionRef.current = true;
-    // 他キャラのモジュールで出した解を残さない。
-    setResult(null);
-    setElapsedMs(null);
-    setAppliedRankMode(null);
-    setError(null);
+    // 他キャラのモジュールで出した解を残さない（切替前に始めた探索の結果も捨てる）。
+    discardResults();
     try {
       await selectCharacter(charId);
       saveJSON(STORAGE_KEYS.selectedCharId, charId);
@@ -849,6 +872,10 @@ export default function App() {
 
         {/* メイン: タブ（結果 / お気に入り） */}
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
+          {status?.value_issue && (
+            <ValueIssueBanner issue={status.value_issue} moduleCount={status.module_count} />
+          )}
+
           <div className="mb-3 flex items-center gap-1 rounded-lg bg-slate-800/60 p-1 w-fit">
             <button
               onClick={() => setTab("results")}
@@ -958,7 +985,13 @@ export default function App() {
                     {noModules ? (
                       <div>
                         <p className="text-sm">{t("empty.noModulesTitle")}</p>
-                        <p className="mt-1 text-xs">{t("empty.noModulesDesc")}</p>
+                        {/* 値の取得異常で取れていないときに「マップ移動で取得」と案内すると、
+                            同じ失敗を繰り返させてしまう。 */}
+                        <p className="mt-1 text-xs">
+                          {status?.value_issue?.kind === "missing"
+                            ? t("empty.noModulesDescValueIssue")
+                            : t("empty.noModulesDesc")}
+                        </p>
                       </div>
                     ) : (
                       <div>

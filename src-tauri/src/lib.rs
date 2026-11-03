@@ -39,6 +39,28 @@ struct StatusDto {
     /// 実際に有効になっているキャラの id（自動採用時もその id を返す）。
     /// char_id は i64 のため JS の number では精度が落ちうる。文字列で返す。
     selected_char_id: Option<String>,
+    /// 有効キャラの直近キャプチャで属性値の取得に起きた異常（None=正常）。
+    value_issue: Option<ValueIssueDto>,
+}
+
+/// 属性値取得の異常（フロント表示用）。`kind` で全件失敗と一部欠けを区別する。
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ValueIssueDto {
+    /// 一部のモジュールで属性値が欠けた。モジュール一覧は更新済み。
+    Partial { affected: usize, total: usize },
+    /// 全モジュールで属性値が取れなかった。モジュール一覧は前回のまま。
+    Missing { total: usize },
+}
+
+impl From<bpsr_core::engine::modules::ValueIssue> for ValueIssueDto {
+    fn from(v: bpsr_core::engine::modules::ValueIssue) -> Self {
+        use bpsr_core::engine::modules::ValueIssue;
+        match v {
+            ValueIssue::Partial { affected, total } => Self::Partial { affected, total },
+            ValueIssue::Missing { total } => Self::Missing { total },
+        }
+    }
 }
 
 /// フロント表示用のキャラ情報。char_id は i64（UID）の精度落ちを避けるため文字列で返す。
@@ -450,6 +472,7 @@ fn capture_status(state: tauri::State<SharedState>) -> StatusDto {
         last_game_packet_ms_ago: last_game,
         characters,
         selected_char_id: s.effective_char_id().map(|id| id.to_string()),
+        value_issue: effective.and_then(|c| c.value_issue).map(ValueIssueDto::from),
     }
 }
 
@@ -710,6 +733,22 @@ mod tests {
     }
 
     #[test]
+    fn value_issue_dto_serializes_with_kind_tag() {
+        use bpsr_core::engine::modules::ValueIssue;
+        // フロントの types.ts（ValueIssueDto）が前提にしている形を固定する。
+        let partial = ValueIssueDto::from(ValueIssue::Partial { affected: 3, total: 10 });
+        assert_eq!(
+            serde_json::to_value(&partial).expect("serialize"),
+            serde_json::json!({ "kind": "partial", "affected": 3, "total": 10 })
+        );
+        let missing = ValueIssueDto::from(ValueIssue::Missing { total: 10 });
+        assert_eq!(
+            serde_json::to_value(&missing).expect("serialize"),
+            serde_json::json!({ "kind": "missing", "total": 10 })
+        );
+    }
+
+    #[test]
     fn dump_path_for_char_zero_returns_legacy_path() {
         let dir = PathBuf::from("C:/dummy");
         assert_eq!(dump_path_for(&dir, 0), legacy_dump_path(&dir));
@@ -743,6 +782,7 @@ mod tests {
                 last_update_ms: Some(123),
                 source: "capture".to_string(),
                 modules: vec![],
+                value_issue: None,
             },
             CharacterEntry {
                 char_id: 0,
@@ -750,6 +790,7 @@ mod tests {
                 last_update_ms: None,
                 source: "dump".to_string(),
                 modules: vec![],
+                value_issue: None,
             },
         ];
         let entries = characters_index_from(&chars);

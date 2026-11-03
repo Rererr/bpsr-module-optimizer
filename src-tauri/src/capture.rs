@@ -9,6 +9,8 @@
 //!
 //! 有効キャラ（選択中、無ければ先着）の内容が変わった時だけ `modules-updated`
 //! イベントをフロントへ発火する（未選択キャラの受信で勝手に再探索させないため）。
+//! 例外として、属性値が全件取れないまま初検知のキャラへ有効キャラが移った時も、
+//! payload 0 で発火する（フロントは探索せず古い結果を片付ける）。
 //! キャラ一覧（新規検知・名前・件数）が変わった時は `characters-updated` を発火する。
 
 use crate::optimizer::Module;
@@ -45,7 +47,7 @@ struct CharThrottle {
 /// キャプチャを開始する（Windows のみ実体動作。要管理者権限）。
 #[cfg(target_os = "windows")]
 pub fn spawn(app: tauri::AppHandle, state: SharedState) {
-    use bpsr_core::engine::modules::parse_modules;
+    use bpsr_core::engine::modules::{parse_modules, ValueIssue};
     use bpsr_core::protocol::opcodes::Pkt;
     use bpsr_core::protocol::pb;
     use prost::Message;
@@ -87,12 +89,31 @@ pub fn spawn(app: tauri::AppHandle, state: SharedState) {
                 .as_ref()
                 .map(|b| b.name.clone())
                 .unwrap_or_default();
-            let core_mods = parse_modules(&v_data);
-            if core_mods.is_empty() {
+            let parsed = parse_modules(&v_data);
+            // 属性値が全件取れない（ゲーム更新で値の置き場が変わった等）ときは、
+            // モジュール一覧・保存データには触れず、UI へ出す警告だけを記録する。
+            // このキャラの前回正しく取れたデータは、そのまま表示・探索に使われ続ける。
+            if let Some(ValueIssue::Missing { total }) = parsed.value_issue {
+                let effective_changed = state
+                    .lock()
+                    .expect("state poisoned")
+                    .record_value_missing(char_id, &char_name, total);
+                // 初検知のキャラへ有効キャラが移った場合は、別キャラのデータで出した
+                // 結果がフロントに残らないよう、0 件として通知する。
+                if effective_changed {
+                    log::info!(
+                        "[capture] キャラ{char_id}: 属性値が取れないまま有効キャラが切り替わったため結果のリセットを通知"
+                    );
+                    let _ = app.emit("modules-updated", 0usize);
+                }
                 continue;
             }
+            if parsed.modules.is_empty() {
+                continue;
+            }
+            let value_issue = parsed.value_issue;
 
-            let modules: Vec<Module> = core_mods.iter().map(Module::from_core).collect();
+            let modules: Vec<Module> = parsed.modules.iter().map(Module::from_core).collect();
             let count = modules.len();
 
             // 自動保存・再探索通知の要否を判定（メモリ更新前に。clone は保存する時だけ）。
@@ -112,6 +133,7 @@ pub fn spawn(app: tauri::AppHandle, state: SharedState) {
                 {
                     let entry = s.upsert_char(char_id);
                     entry.modules = modules;
+                    entry.value_issue = value_issue;
                     entry.last_update_ms = Some(crate::now_ms());
                     entry.source = "capture".to_string();
                     if !char_name.is_empty() {

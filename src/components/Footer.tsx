@@ -1,34 +1,16 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { getVersion } from "@tauri-apps/api/app";
 import { X } from "lucide-react";
 import { useI18n } from "../i18n";
-
-const GITHUB_ISSUE_URL = "https://github.com/Rererr/bpsr-module-optimizer/issues/new";
+import { GITHUB_ISSUE_URL, appVersion, openExternal } from "../external";
 
 interface Props {
   onHide: () => void;
-}
-
-// 既定ブラウザで外部リンクを開く。webview 内 window.open は Tauri v2 では使わず opener プラグイン経由。
-// 失敗してもフッター表示自体は継続させたいため、UI へは伝播させずログのみ残す。
-async function openExternal(url: string, label: string): Promise<void> {
-  try {
-    await openUrl(url);
-  } catch (e) {
-    console.error(`[Footer] ${label} のオープンに失敗:`, e);
-  }
 }
 
 export function Footer({ onHide }: Props) {
   const { t } = useI18n();
 
   const handleContact = async () => {
-    let version = "unknown";
-    try {
-      version = await getVersion();
-    } catch (e) {
-      console.error("[Footer] バージョン取得に失敗:", e);
-    }
+    const version = await appVersion();
     const url = `https://rererr-portfolio.pages.dev/?from=bpsr-module-optimizer&v=${encodeURIComponent(version)}#contact`;
     await openExternal(url, t("footer.contact"));
   };

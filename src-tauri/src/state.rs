@@ -33,9 +33,13 @@ pub struct CharacterEntry {
     pub name: String,
     /// 最後にモジュールを更新した unix ms（キャプチャ or ダンプ読込）。
     pub last_update_ms: Option<u64>,
-    /// モジュールの取得元（"capture" | "dump"）。
+    /// モジュールの取得元（"capture" | "dump" | "none"）。"none" は属性値が読めないまま
+    /// 検知しただけでモジュールを持たないキャラ（`record_value_missing` 参照）。
     pub source: String,
     pub modules: Vec<Module>,
+    /// 直近のキャプチャで属性値の取得に起きた異常（None=正常 or 未キャプチャ）。
+    /// `Missing` のときは `modules` を更新しておらず、前回取れたデータのまま。
+    pub value_issue: Option<bpsr_core::engine::modules::ValueIssue>,
 }
 
 #[derive(Default)]
@@ -97,6 +101,29 @@ impl Inner {
         self.chars.last_mut().expect("直前に push した要素")
     }
 
+    /// 属性値が全件取れなかったキャプチャ（`ValueIssue::Missing`）を記録する。
+    /// モジュール一覧・最終更新時刻には触れず、警告と名前だけを残す（前回正しく取れた
+    /// データを使い続けるため）。初検知のキャラはモジュール 0 件・取得元 "none" で作る。
+    ///
+    /// 有効キャラが変わったら true を返す。他に実キャラがいない状態（擬似キャラ char_id=0
+    /// だけを見ている等）で初検知のキャラが現れると、優先順位により有効キャラがそちらへ
+    /// 移るため、呼び出し側は再探索通知（modules-updated）を出してフロントの古い結果を
+    /// 片付ける必要がある。
+    /// `total` は今回のキャプチャで見つかったモジュール数（`ValueIssue::Missing` の件数）。
+    /// `ValueIssue` ごと受け取らないのは、`Partial` を誤って渡せないようにするため。
+    pub fn record_value_missing(&mut self, char_id: i64, name: &str, total: usize) -> bool {
+        let before = self.effective_char_id();
+        let entry = self.upsert_char(char_id);
+        if entry.source.is_empty() {
+            entry.source = "none".to_string();
+        }
+        entry.value_issue = Some(bpsr_core::engine::modules::ValueIssue::Missing { total });
+        if !name.is_empty() {
+            entry.name = name.to_string();
+        }
+        self.effective_char_id() != before
+    }
+
     /// キャラ一覧の内容署名（char_id・名前・モジュール件数のみ。last_update_ms は
     /// 含めない＝時刻が進むだけの更新では変化しない）。characters.json の
     /// 書込抑止（内容が変わった時だけ書く）に使う。
@@ -141,6 +168,42 @@ mod tests {
         entry_with_source(char_id, name, mod_count, "capture")
     }
 
+    const MISSING: bpsr_core::engine::modules::ValueIssue =
+        bpsr_core::engine::modules::ValueIssue::Missing { total: 10 };
+
+    #[test]
+    fn record_value_missing_keeps_existing_modules() {
+        let mut s = Inner {
+            chars: vec![entry(7, "七番", 3)],
+            ..Default::default()
+        };
+        let changed = s.record_value_missing(7, "七番改", 10);
+        assert!(!changed);
+        let c = &s.chars[0];
+        assert_eq!(c.modules.len(), 3, "前回のモジュールを消してはいけない");
+        assert_eq!(c.last_update_ms, Some(1), "最終更新時刻は進めない");
+        assert_eq!(c.source, "capture");
+        assert_eq!(c.name, "七番改");
+        assert_eq!(c.value_issue, Some(MISSING));
+    }
+
+    #[test]
+    fn record_value_missing_reports_effective_switch_from_pseudo_char() {
+        // 擬似キャラ（char_id=0）だけを見ている状態で初検知の実キャラが現れると、
+        // 優先順位で有効キャラがそちらへ移る。呼び出し側が再探索を通知できるよう true。
+        let mut s = Inner {
+            chars: vec![entry_with_source(0, "", 5, "dump")],
+            ..Default::default()
+        };
+        let changed = s.record_value_missing(9, "", 10);
+        assert!(changed);
+        assert_eq!(s.effective_char_id(), Some(9));
+        let c = s.effective_char().expect("有効キャラ");
+        assert!(c.modules.is_empty());
+        assert_eq!(c.source, "none", "StatusDto.source の契約（capture|dump|none）を守る");
+        assert_eq!(c.value_issue, Some(MISSING));
+    }
+
     fn entry_with_source(
         char_id: i64,
         name: &str,
@@ -153,6 +216,7 @@ mod tests {
             last_update_ms: Some(1),
             source: source.to_string(),
             modules: (0..mod_count).map(|_| test_module()).collect(),
+            value_issue: None,
         }
     }
 

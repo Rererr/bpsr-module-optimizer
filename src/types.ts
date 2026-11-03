@@ -81,7 +81,14 @@ export interface StatusDto {
   characters: CharacterDto[];
   // 実際に有効になっているキャラの id（自動採用時もその id を返す）。
   selected_char_id: string | null;
+  // 有効キャラの直近キャプチャで属性値の取得に起きた異常（null=正常）。
+  value_issue: ValueIssueDto | null;
 }
+
+// 属性値取得の異常。missing=全件取れず一覧は前回のまま、partial=一部欠けたが一覧は更新済み。
+export type ValueIssueDto =
+  | { kind: "missing"; total: number }
+  | { kind: "partial"; affected: number; total: number };
 
 // 属性レベルの閾値境界（属性値 → Lv0〜6）。UI のレベル表示に使う。
 export const ATTR_THRESHOLDS = [1, 4, 8, 12, 16, 20];
