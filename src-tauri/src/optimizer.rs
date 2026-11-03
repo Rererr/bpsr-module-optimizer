@@ -578,7 +578,7 @@ pub struct Part {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Module {
-    /// items マップのキー（mod_infos との突合キー）。モジュールの一意識別に使う。
+    /// items マップのキー（更新前の形式では mod_infos との突合キー）。モジュールの一意識別に使う。
     pub key: i64,
     pub uuid: i64,
     pub config_id: i32,

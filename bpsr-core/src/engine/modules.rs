@@ -25,7 +25,7 @@ pub struct ModulePart {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModuleInfo {
-    /// items マップのキー。mod_infos との突合に使う。
+    /// items マップのキー。更新前の形式では mod_infos との突合に使う。
     pub key: i64,
     pub uuid: i64,
     pub config_id: i32,
@@ -43,6 +43,10 @@ pub fn parse_modules(snapshot: &pb::PlayerSnapshot) -> Vec<ModuleInfo> {
     let mod_infos = snapshot.r#mod.as_ref().map(|m| &m.mod_infos);
 
     let mut modules = Vec::new();
+    // 値が一部でも取れなかったモジュール数（形式ごと）。ゲーム更新で値の置き場が
+    // また変わったときにログから気付けるよう、最後にまとめて警告する。
+    let mut incomplete_new = 0usize;
+    let mut incomplete_old = 0usize;
     for package in item_package.packages.values() {
         for (key, item) in &package.items {
             let Some(attr) = item.mod_new_attr.as_ref() else {
@@ -52,26 +56,27 @@ pub fn parse_modules(snapshot: &pb::PlayerSnapshot) -> Vec<ModuleInfo> {
                 continue; // モジュール以外のアイテム
             }
 
-            let parts = match item.mod_part_values.as_ref() {
+            let parts: Vec<ModulePart> = match item.mod_part_values.as_ref() {
                 // 2026-10-29 のゲーム更新以降: 値は item 自身に attr_id → 値 で載る。
                 // 並びは mod_parts と一致しないため、位置ではなく attr_id で引く。
-                Some(pv) if !pv.values.is_empty() => attr
-                    .mod_parts
-                    .iter()
-                    .filter_map(|&attr_id| {
-                        let value = pv.values.get(&attr_id).copied();
-                        if value.is_none() {
-                            warn!(
-                                "[modules] key={key}: 属性 {attr_id} の値が mod_part_values に無い（この属性を除外）"
-                            );
-                        }
-                        value.map(|value| ModulePart {
-                            attr_id,
-                            attr_name: attr_name(attr_id),
-                            value,
+                // 値の無い属性は除外する（更新前の zip による切り詰めと同じ扱い）。
+                Some(pv) if !pv.values.is_empty() => {
+                    let parts: Vec<ModulePart> = attr
+                        .mod_parts
+                        .iter()
+                        .filter_map(|&attr_id| {
+                            pv.values.get(&attr_id).map(|&value| ModulePart {
+                                attr_id,
+                                attr_name: attr_name(attr_id),
+                                value,
+                            })
                         })
-                    })
-                    .collect(),
+                        .collect();
+                    if parts.len() < attr.mod_parts.len() {
+                        incomplete_new += 1;
+                    }
+                    parts
+                }
                 // 更新前の形式: 値は mod_infos[key].init_link_nums に mod_parts と同順で並ぶ。
                 // 短い方に合わせて zip。
                 _ => {
@@ -79,6 +84,9 @@ pub fn parse_modules(snapshot: &pb::PlayerSnapshot) -> Vec<ModuleInfo> {
                         .and_then(|m| m.get(key))
                         .map(|e| e.init_link_nums.as_slice())
                         .unwrap_or(&[]);
+                    if link_nums.len() < attr.mod_parts.len() {
+                        incomplete_old += 1;
+                    }
                     attr.mod_parts
                         .iter()
                         .zip(link_nums)
@@ -101,6 +109,27 @@ pub fn parse_modules(snapshot: &pb::PlayerSnapshot) -> Vec<ModuleInfo> {
             });
         }
     }
+
+    if incomplete_new + incomplete_old > 0 {
+        warn!(
+            "[modules] 属性値の一部が取れないモジュールがある: {} / {} 件（mod_part_values 経由 {} 件・mod_infos 経由 {} 件）。ゲーム更新で値の置き場が変わった可能性",
+            incomplete_new + incomplete_old,
+            modules.len(),
+            incomplete_new,
+            incomplete_old
+        );
+    }
+    // 全モジュールで値が1つも取れないなら、値の置き場が変わったと見なして 0 件を返す。
+    // 属性が空のモジュールを返すと、呼び出し側が保存済みの正しいデータを空で上書きし、
+    // 全件スコア0の再探索まで走らせてしまう（Issue #1 の壊れ方）。0 件なら呼び出し側は
+    // 何もしないので、最後に正しく取れたデータが残る。
+    if !modules.is_empty() && modules.iter().all(|m| m.parts.is_empty()) {
+        warn!(
+            "[modules] モジュール {} 件すべてで属性値が取れないため、取得結果を破棄します",
+            modules.len()
+        );
+        return Vec::new();
+    }
     modules
 }
 
@@ -109,7 +138,7 @@ pub fn dump_modules(snapshot: &pb::PlayerSnapshot) {
     let modules = parse_modules(snapshot);
     if modules.is_empty() {
         info!(
-            "[modules] WorldEnterSnapshot 受信。所持モジュール 0 件（item_package/mod 未含 or モジュール無し）"
+            "[modules] WorldEnterSnapshot 受信。所持モジュール 0 件（item_package 未含 or モジュール無し or 属性値が全件取れない）"
         );
         return;
     }
@@ -215,10 +244,99 @@ mod tests {
         pb::InvItem {
             uuid: 100,
             config_id: 5500102,
-            quality: 3,
             mod_new_attr: Some(pb::ModuleAttrs { mod_parts }),
             mod_part_values: values.map(|values| pb::ModulePartValues { values }),
+            ..Default::default()
         }
+    }
+
+    // --- protobuf wire 形式の手組み（pb.proto のフィールド番号を prost 非経由で固定する） ---
+
+    fn varint(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let b = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                return out;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn field_varint(field: u32, v: u64) -> Vec<u8> {
+        let mut out = varint(u64::from(field << 3));
+        out.extend(varint(v));
+        out
+    }
+
+    fn field_bytes(field: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = varint(u64::from((field << 3) | 2));
+        out.extend(varint(body.len() as u64));
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// 実機（2026-11-04 取得）と同じ形: f13.f1 = packed mod_parts、
+    /// f21 = ラッパー、その f1 に {f1: attr_id, f2: 値} の繰り返し。
+    fn wire_item(mod_parts: &[i32], values: &[(i32, i32)]) -> Vec<u8> {
+        let packed: Vec<u8> = mod_parts.iter().flat_map(|&a| varint(a as u64)).collect();
+        let mod_new_attr = field_bytes(1, &packed);
+        let wrapper: Vec<u8> = values
+            .iter()
+            .flat_map(|&(a, v)| {
+                let mut entry = field_varint(1, a as u64);
+                entry.extend(field_varint(2, v as u64));
+                field_bytes(1, &entry)
+            })
+            .collect();
+        let mut item = field_varint(1, 100);
+        item.extend(field_varint(2, 5500102));
+        item.extend(field_varint(9, 3));
+        item.extend(field_bytes(13, &mod_new_attr));
+        item.extend(field_bytes(21, &wrapper));
+        item
+    }
+
+    #[test]
+    fn decodes_wire_format_of_updated_item() {
+        use prost::Message;
+        // f21 の並びを mod_parts と変えておく。位置で引く誤実装はここで必ず落ちる。
+        let bytes = wire_item(&[1409, 1307, 1308], &[(1308, 3), (1409, 7), (1307, 5)]);
+        let item = pb::InvItem::decode(bytes.as_slice()).expect("InvItem の decode に失敗");
+        assert_eq!((item.uuid, item.config_id, item.quality), (100, 5500102, 3));
+        let mods = parse_modules(&snapshot_with(item, 100, Some(pb::ModuleSet::default())));
+        assert_eq!(values_of(&mods[0]), vec![(1409, 7), (1307, 5), (1308, 3)]);
+    }
+
+    #[test]
+    fn prefers_item_values_over_mod_infos() {
+        let item = module_item(vec![1111], Some(HashMap::from([(1111, 9)])));
+        let set = pb::ModuleSet {
+            mod_infos: HashMap::from([(100, pb::ModuleEntry { init_link_nums: vec![1] })]),
+        };
+        let mods = parse_modules(&snapshot_with(item, 100, Some(set)));
+        assert_eq!(values_of(&mods[0]), vec![(1111, 9)]);
+    }
+
+    #[test]
+    fn falls_back_when_item_values_are_empty() {
+        let item = module_item(vec![1111], Some(HashMap::new()));
+        let set = pb::ModuleSet {
+            mod_infos: HashMap::from([(100, pb::ModuleEntry { init_link_nums: vec![4] })]),
+        };
+        let mods = parse_modules(&snapshot_with(item, 100, Some(set)));
+        assert_eq!(values_of(&mods[0]), vec![(1111, 4)]);
+    }
+
+    #[test]
+    fn returns_nothing_when_no_values_anywhere() {
+        // Issue #1 の状態: 属性 ID はあるが値の置き場がどこにも無い。
+        // 空の属性で保存済みデータを上書きしないよう 0 件を返す。
+        let item = module_item(vec![1111, 1408], None);
+        let mods = parse_modules(&snapshot_with(item, 100, Some(pb::ModuleSet::default())));
+        assert!(mods.is_empty());
     }
 
     fn values_of(m: &ModuleInfo) -> Vec<(i32, i32)> {
