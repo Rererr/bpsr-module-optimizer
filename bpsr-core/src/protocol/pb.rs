@@ -139,8 +139,8 @@ pub struct InvItem {
     #[prost(message, optional, tag = "13")]
     pub mod_new_attr: ::core::option::Option<ModuleAttrs>,
     /// Per-attribute values of a module (attr_id -> value). Added by a game update
-    /// between 2026-08-31 and 2026-11-04 (last good capture / first capture in the new
-    /// format; the exact release date is unverified); it replaced
+    /// between 2026-08-31 and 2026-11-04 (the latest old-format capture and the
+    /// new-format capture we have; the exact release date is unverified); it replaced
     /// ModuleSet.mod_infos\[key\].init_link_nums.
     /// Field names are ours (not in the reference zproto definitions).
     #[prost(message, optional, tag = "21")]

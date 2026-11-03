@@ -180,7 +180,7 @@ cargo check
 
 - Reads the owned items and module information contained in the game's `WorldEnterSnapshot`.
 - Extracts items that have module attributes (`mod_new_attr.mod_parts`) within `item_package`.
-- Reconstructs attribute IDs and values from the per-attribute values stored on each item (the format since a game update in fall 2026). The older format (`mod.mod_infos[key].init_link_nums`) is still supported.
+- Reconstructs attribute IDs and values from the per-attribute values stored on each item (the format since a game update in the second half of 2026). The older format (`mod.mod_infos[key].init_link_nums`) is still supported.
 - Attribute names and module-type names are displayed using localization data.
 
 ## Related projects
