@@ -240,17 +240,12 @@ export default function App() {
   // onSelectCharacter による明示選択時のみ行う＝復元側は保存値を上書きしない）。
   const restoredSelectionRef = useRef(false);
 
-  // 保存された選択キャラがまだ検知一覧に現れていなければ何もしない（保持したまま
-  // 次回の characters-updated で再試行する）。現れていれば select_character で復元する。
-  // st.selected_char_id は自動解決の結果であって「明示的に固定された」ことを意味しない
-  // （backend の selected_char_id: Option<i64> が None のままでも、たまたま自動解決が
-  // 保存値と同じ id を指すことがある）ため、id が一致していても必ず select_character を
-  // 呼んで明示的に固定する（同一 id への再選択は冪等）。
   // 探索の世代。結果を片付けた（キャラ切替・0 件化）後に、それ以前に始めた探索が
   // 完了して古い結果を書き戻さないよう、開始時の世代と一致する時だけ反映する。
   const searchGenRef = useRef(0);
   // 実行中の探索数。バックエンドの探索は中断できないので、結果を捨てた探索も終わるまで
-  // 実行中表示（＝実行ボタン無効）を保ち、重い探索を並べて走らせない。
+  // 実行中表示（＝実行ボタン無効）を保ち、手動では重い探索を並べて走らせない
+  // （modules-updated からの自動再探索は loading を見ないので重なりうる）。
   const inflightRef = useRef(0);
   // 「結果が古い」を立てた時点の世代。それ以前に始めた探索の完了では印を下ろさない
   // （変更前のモジュールで出した結果なので古いまま）。
@@ -270,6 +265,12 @@ export default function App() {
     setModulesStale(true);
   }, []);
 
+  // 保存された選択キャラがまだ検知一覧に現れていなければ何もしない（保持したまま
+  // 次回の characters-updated で再試行する）。現れていれば select_character で復元する。
+  // st.selected_char_id は自動解決の結果であって「明示的に固定された」ことを意味しない
+  // （backend の selected_char_id: Option<i64> が None のままでも、たまたま自動解決が
+  // 保存値と同じ id を指すことがある）ため、id が一致していても必ず select_character を
+  // 呼んで明示的に固定する（同一 id への再選択は冪等）。
   const tryRestoreSelectedCharacter = useCallback((st: StatusDto) => {
     if (restoredSelectionRef.current) return;
     const savedCharId = loadJSON<string | null>(STORAGE_KEYS.selectedCharId, null);
