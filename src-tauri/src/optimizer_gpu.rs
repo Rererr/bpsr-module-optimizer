@@ -1047,8 +1047,10 @@ fn read_combos(
     let size = (count * 5 * 4) as u64;
     let bytes = read_buffer_bytes(device, queue, buf, 0, size)?;
     Ok(bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().expect("chunks_exact(4)は常に4バイト")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect())
 }
 
@@ -1203,13 +1205,17 @@ fn refine_threshold_on_overflow(
     let combos = read_combos(&ctx.device, &ctx.queue, out_buf, CAPACITY as usize)?;
     let n = prepared.cands.len();
     if combos
-        .chunks_exact(5)
+        .as_chunks::<5>()
+        .0
+        .iter()
         .any(|raw| raw[..slot_count].iter().any(|&si| si as usize >= n))
     {
         return Err("GPU出力comboのインデックスが探索範囲外です（実行時異常）".to_string());
     }
     let extra = combos
-        .chunks_exact(5)
+        .as_chunks::<5>()
+        .0
+        .iter()
         .map(|raw| recompute_combo_unchecked(prepared, slot_count, raw, mode));
     Ok(next_retry_threshold(
         seed_ranked,
@@ -1661,7 +1667,7 @@ fn run_gpu_search_chunked(
                 // — 全チャンク投入後の最終読み戻しが先頭チャンク分も含めて自然にカバーする）。
                 // 重複除去の理由は [`merge_topk_for_refinement`] のdoc参照（admissible性の前提）。
                 let mut extra = Vec::with_capacity(appended0 as usize);
-                for raw in combos0.chunks_exact(5) {
+                for raw in combos0.as_chunks::<5>().0 {
                     extra.push(recompute_combo(prepared, slot_count, raw, mode)?);
                 }
                 // `next_retry_threshold` は `threshold` より真に締まっている場合のみ
@@ -1781,7 +1787,7 @@ fn run_gpu_search_chunked(
     let mut topk = TopK::new(top_k);
     if appended > 0 {
         let combos = read_combos(&ctx.device, &ctx.queue, &out_buf, appended as usize)?;
-        for raw in combos.chunks_exact(5) {
+        for raw in combos.as_chunks::<5>().0 {
             let (key, combo) = recompute_combo(prepared, slot_count, raw, mode)?;
             topk.offer(key, &combo);
         }
@@ -2028,7 +2034,7 @@ fn run_gpu_search(
 
     if appended > 0 {
         let combos = read_combos(&ctx.device, &ctx.queue, &out_buf, appended as usize)?;
-        for raw in combos.chunks_exact(5) {
+        for raw in combos.as_chunks::<5>().0 {
             let sorted_indices = &raw[..slot_count];
             if sorted_indices.iter().any(|&si| si as usize >= n) {
                 return Err("GPU出力comboのインデックスが探索範囲外です（実行時異常）".to_string());
