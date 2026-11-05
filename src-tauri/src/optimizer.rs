@@ -75,9 +75,9 @@ pub(crate) fn level_of(v: i32) -> usize {
 // Data/ModEffectTable.json の FightValue と Data/ModLinkEffectTable.json の LinkTime→FightValue。
 // 能力スコア = 各属性の Lv 加点の合計 + 全属性値の合計に対する加点。
 /// 通常属性の Lv1〜6 の加点。
-const ABILITY_LEVEL_SCORE_NORMAL: [u32; 6] = [7, 14, 29, 44, 167, 254];
+const ABILITY_LEVEL_SCORE_NORMAL: [u32; ATTR_THRESHOLDS.len()] = [7, 14, 29, 44, 167, 254];
 /// 極系（上位属性）の Lv1〜6 の加点。
-const ABILITY_LEVEL_SCORE_SPECIAL: [u32; 6] = [14, 29, 59, 89, 298, 448];
+const ABILITY_LEVEL_SCORE_SPECIAL: [u32; ATTR_THRESHOLDS.len()] = [14, 29, 59, 89, 298, 448];
 /// 全属性値の合計（0〜120）に対する加点。ModLinkEffectTable.json の LinkTime→FightValue から生成。
 /// 範囲外（121 以上）の扱いは未確認のため、丸めず None として扱う。
 const ABILITY_TOTAL_SCORE: [u32; 121] = [
@@ -1447,7 +1447,7 @@ mod tests {
     ];
 
     #[test]
-    fn ability_score_matches_in_game_value() {
+    fn ability_score_matches_issue5_example() {
         let sol = build_solution(vec![module(1, 5500101, &VERIFIED_PARTS)], &[], &[]);
         assert_eq!(sol.link_effect, 93);
         assert_eq!(sol.ability_score, Some(1585));
