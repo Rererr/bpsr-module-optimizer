@@ -20,14 +20,20 @@ const GROUP_ORDER = ["Basic", "Combat", "Focus", "Resist", "Support", "Ultra"];
 // 除外モードのセグメント順（false=ソフト除外が既定なので先頭）。
 const EXCLUDE_MODES = [false, true];
 
-function chipClass(state: AttrState, special: boolean): string {
+// チップとアイコンの見た目を同じ状態分岐から決める（判定を1か所に保つ）。
+function attrStyle(state: AttrState, special: boolean): { chip: string; icon?: string } {
   if (state === "target")
-    return "border-emerald-500 bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40";
+    return { chip: "border-emerald-500 bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40" };
   if (state === "exclude")
-    return "border-rose-500 bg-rose-500/10 text-rose-300 line-through ring-1 ring-rose-500/30";
-  return special
-    ? "border-amber-600/60 bg-amber-500/10 text-amber-200 hover:border-amber-500"
-    : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-500";
+    return {
+      chip: "border-rose-500 bg-rose-500/10 text-rose-300 line-through ring-1 ring-rose-500/30",
+      icon: "opacity-50 grayscale",
+    };
+  return {
+    chip: special
+      ? "border-amber-600/60 bg-amber-500/10 text-amber-200 hover:border-amber-500"
+      : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-500",
+  };
 }
 
 export function AttributePicker({
@@ -158,21 +164,15 @@ export function AttributePicker({
               {byGroup.get(g)!.map((a) => {
                 const st = selection[a.id] ?? "none";
                 const name = attrName(a.id, a.name);
+                const style = attrStyle(st, a.special);
                 return (
                   <button
                     key={a.id}
                     onClick={() => onCycle(a.id)}
                     title={name}
-                    className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition ${chipClass(
-                      st,
-                      a.special,
-                    )}`}
+                    className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition ${style.chip}`}
                   >
-                    <AttrIcon
-                      attrId={a.id}
-                      size={16}
-                      className={st === "exclude" ? "opacity-50 grayscale" : undefined}
-                    />
+                    <AttrIcon attrId={a.id} size={16} className={style.icon} />
                     <span className="truncate">{name}</span>
                   </button>
                 );

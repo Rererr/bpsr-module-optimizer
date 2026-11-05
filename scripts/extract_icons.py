@@ -122,7 +122,7 @@ def main() -> int:
         return 2
     container = Path(sys.argv[1])
     out_dir = Path(sys.argv[2]) if len(sys.argv) == 3 else Path(__file__).resolve().parent.parent / "src" / "assets" / "icons"
-    # Patch/ などの下位ディレクトリに更新分が入っても拾う。
+    # Patch/ などの下位ディレクトリの pkg も走査する。元の pkg と中身が違えば重複エラーで止まる。
     pkgs = sorted(container.rglob("m*.pkg"))
     if not pkgs:
         print(f"error: {container} に m*.pkg がありません", file=sys.stderr)
