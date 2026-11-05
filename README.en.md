@@ -25,7 +25,7 @@ From the modules you own, it brute-forces every combination of **4 or 5 slots** 
 - **Target / excluded attributes** — Click to pick the attribute you want to grow (click again to mark it as excluded).
 - **Per-attribute minimum level** — Narrow results with conditions like "this attribute must be at least Lv5."
 - **Category filter** — Filter by module type: Attack / Guard / Support.
-- **Adjustable result count (1–50)** — Lists each set's Lv6 count, Lv5 count, full attribute-level breakdown, link effect (the sum of all attribute values), and ability score (the same calculation as in the game; display only, not used for ranking).
+- **Adjustable result count (1–50)** — Lists each set's Lv6 count, Lv5 count, full attribute-level breakdown, link effect (the sum of all attribute values), and ability score (calculated from the game's data tables; display only, not used for ranking).
 - **Candidate filter (optional, off by default)** — Drop modules you never use from the candidates by quality (Purple / Gold) or by total attribute value. It speeds up the search, but the best combination across all the modules you own may no longer appear, so enabling it asks for confirmation and the filtered state stays visible on screen.
 - **Presets** — Name and save frequently used search conditions and recall them with one click.
 - **Favorite builds** — Save setups you like with a ★. They can be named and managed, and multiple builds can be compared side by side.
@@ -130,7 +130,7 @@ An attribute's level is treated as Lv1–Lv6 as its total attribute value reache
 - Target attributes get a soft "include if possible" preference. If a target can't be included, it is silently dropped (only a target with a minimum-level requirement becomes a hard condition that excludes combinations failing to meet it).
 - By default, excluding an attribute is a **soft exclude**: it is dropped from scoring only, and modules containing that attribute can still be used (in that case, combinations with a smaller sum of excluded attribute values are preferred). Enabling "fully exclude" (hard exclude) removes any module containing the excluded attribute from the candidates.
 - The large number on a card is always the actual link effect matching the in-game display. Only when a soft exclusion makes the scoring value (item 4 above) differ from it does the card also show a small "Eval Score" line below.
-- The "Ability Score" line under the large number uses the same calculation as the game (points per attribute level plus points for the total attribute value; soft-excluded attributes are included). It is display only and not used for ranking. When it can't be calculated (for example, the total is outside the score table), "—" is shown.
+- The "Ability Score" line under the large number is calculated from the game's data tables (points per attribute level plus points for the total attribute value; soft-excluded attributes are included). It is display only and not used for ranking. When it can't be calculated (for example, the total is outside the score table), "—" is shown.
 
 ## Loading a JSON dump
 

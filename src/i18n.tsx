@@ -120,7 +120,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "card.evalLink": "評価スコア",
     "card.abilityScore": "能力スコア",
     "card.abilityScoreHelp":
-      "ゲーム内の能力スコアと同じ計算（ソフト除外の属性も含む）。並び順には使いません",
+      "ゲームのデータ表に基づく計算（ソフト除外の属性も含む）。並び順には使いません",
     "card.abilityScoreUnavailable":
       "合計値が加点表の範囲外か、未知の属性を含むため算出できません",
     "card.softExcluded": "ソフト除外",
@@ -273,7 +273,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     // 仮の名称。英語版ゲームでの正式名称は未確認（日本語名「能力スコア」のみ確認済み）。
     "card.abilityScore": "Ability Score",
     "card.abilityScoreHelp":
-      "Same calculation as the in-game ability score (soft-excluded attributes included). Not used for ranking",
+      "Calculated from the game's data tables (soft-excluded attributes included). Not used for ranking",
     "card.abilityScoreUnavailable":
       "Cannot be calculated: the total is outside the score table, or an unknown attribute is included",
     "card.softExcluded": "Soft-excluded",
