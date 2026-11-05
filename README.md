@@ -209,4 +209,4 @@ cargo check
 - [WinDivert](https://www.reqrypt.org/windivert.html): パケット取得に使用。WinDivert は GNU Lesser General Public License（LGPL）で提供されています。
 - [BPSR-ZDPS](https://github.com/Blue-Protocol-Source/BPSR-ZDPS)（MIT）: 能力スコアの加点表は、このプロジェクトのデータ（`ModEffectTable.json` / `ModLinkEffectTable.json`）に由来します（Copyright (c) 2025 Blue-Protocol-Source）。
 
-ゲーム内名称や関連する権利は各権利者に帰属します。本ツールは非公式のファンメイドツールであり、ゲーム運営とは関係ありません。
+ゲーム内名称や関連する権利は各権利者に帰属します。アイコン画像はゲームのクライアントから抽出したもので、その権利も各権利者に帰属します。本ツールは非公式のファンメイドツールであり、ゲーム運営とは関係ありません。

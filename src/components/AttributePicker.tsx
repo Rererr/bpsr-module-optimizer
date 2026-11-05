@@ -1,6 +1,7 @@
 import type { AttrMeta, AttrState } from "../types";
 import { useI18n } from "../i18n";
 import { HelpPopover } from "./HelpPopover";
+import { AttrIcon } from "./GameIcon";
 
 export type { AttrState };
 
@@ -162,12 +163,13 @@ export function AttributePicker({
                     key={a.id}
                     onClick={() => onCycle(a.id)}
                     title={name}
-                    className={`h-8 truncate rounded-md border px-2.5 text-xs font-medium transition ${chipClass(
+                    className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition ${chipClass(
                       st,
                       a.special,
                     )}`}
                   >
-                    {name}
+                    <AttrIcon attrId={a.id} size={16} />
+                    <span className="truncate">{name}</span>
                   </button>
                 );
               })}
