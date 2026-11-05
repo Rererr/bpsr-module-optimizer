@@ -71,6 +71,44 @@ pub(crate) fn level_of(v: i32) -> usize {
     ATTR_THRESHOLDS.iter().take_while(|&&t| v >= t).count()
 }
 
+// 能力スコア（ゲーム内の「能力スコア」）の加点表。出典: BPSR-ZDPS（MIT）の
+// Data/ModEffectTable.json の FightValue と Data/ModLinkEffectTable.json の LinkTime→FightValue。
+// 能力スコア = 各属性の Lv 加点の合計 + 全属性値の合計に対する加点。
+/// 通常属性の Lv1〜6 の加点。
+const ABILITY_LEVEL_SCORE_NORMAL: [u32; ATTR_THRESHOLDS.len()] = [7, 14, 29, 44, 167, 254];
+/// 極系（上位属性）の Lv1〜6 の加点。
+const ABILITY_LEVEL_SCORE_SPECIAL: [u32; ATTR_THRESHOLDS.len()] = [14, 29, 59, 89, 298, 448];
+/// 全属性値の合計（0〜120）に対する加点。ModLinkEffectTable.json の LinkTime→FightValue から生成。
+/// 範囲外（121 以上）の扱いは未確認のため、丸めず None として扱う。
+const ABILITY_TOTAL_SCORE: [u32; 121] = [
+    0, 5, 11, 17, 23, 29, 34, 40, 46, 52, 58, 64, 69, 75, 81, 87, 93, 99, 104, 110, 116, 122, 128,
+    133, 139, 145, 151, 157, 163, 168, 174, 180, 186, 192, 198, 203, 209, 215, 221, 227, 233, 238,
+    244, 250, 256, 262, 267, 273, 279, 285, 291, 297, 302, 308, 314, 320, 326, 332, 337, 343, 349,
+    355, 361, 366, 372, 378, 384, 390, 396, 401, 407, 413, 419, 425, 431, 436, 442, 448, 454, 460,
+    466, 471, 477, 483, 489, 495, 500, 506, 512, 518, 524, 530, 535, 541, 547, 553, 559, 565, 570,
+    576, 582, 588, 594, 599, 605, 611, 617, 623, 629, 634, 640, 646, 652, 658, 664, 669, 675, 681,
+    687, 693, 699,
+];
+
+/// 能力スコアを返す。属性ごとの Lv 加点 + 合計値（`link_effect`）の加点。
+/// 合計が表の範囲外（負・121 以上）、または Lv1 以上なのに属性IDが未知で通常/極を判別できない
+/// ときは None（推測で丸めない）。
+fn ability_score(breakdown: &[AttrBreakdown], link_effect: i32) -> Option<u32> {
+    let total_score = *usize::try_from(link_effect)
+        .ok()
+        .and_then(|i| ABILITY_TOTAL_SCORE.get(i))?;
+    let mut level_score = 0;
+    for b in breakdown.iter().filter(|b| b.level >= 1) {
+        let table = if crate::attrs::is_special(b.attr_id)? {
+            &ABILITY_LEVEL_SCORE_SPECIAL
+        } else {
+            &ABILITY_LEVEL_SCORE_NORMAL
+        };
+        level_score += table[b.level - 1];
+    }
+    Some(level_score + total_score)
+}
+
 /// n 個から k 個を選ぶ組み合わせ数 C(n, k)。中間計算を u128 で行い桁溢れを避ける。
 pub(crate) fn n_choose_k(n: usize, k: usize) -> u64 {
     if k > n {
@@ -645,6 +683,9 @@ pub struct Solution {
     pub modules: Vec<Module>,
     /// リンク効果（全属性値の合計・表示用の真値）。ソフト除外属性の値も含む。
     pub link_effect: i32,
+    /// 能力スコア（ゲームのデータ表に基づく計算値）。ソフト除外属性も含む全属性で計算する表示専用の値で、
+    /// ランキングには使わない。合計値が表の範囲外などで算出できないときは None。
+    pub ability_score: Option<u32>,
     /// 評価対象スコア（ソフト除外属性を除いた counted 属性値の合計）。ランキングキーの実体。
     pub eval_link: i32,
     /// Lv6 到達数（ソフト除外属性は含まない）。
@@ -1221,10 +1262,12 @@ fn build_solution(mods: Vec<Module>, selected_ids: &[i32], soft_exclude_ids: &[i
         .map(|b| b.value)
         .sum();
     let link_effect = breakdown.iter().map(|b| b.value).sum();
+    let ability_score = ability_score(&breakdown, link_effect);
 
     Solution {
         modules: mods,
         link_effect,
+        ability_score,
         eval_link,
         lv6_count,
         lv5_count,
@@ -1389,6 +1432,71 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Issue #5 の添付画像に能力スコア 1585 と記載された構成（合計 93、Lv 加点 1044 + 合計加点 541）。
+    /// 1585 がゲーム画面の値かは未確認。
+    const VERIFIED_PARTS: [(i32, i32); 7] = [
+        (1409, 23), // 集中・会心
+        (1111, 20), // 敏捷強化
+        (1113, 20), // 特攻ダメージ強化
+        (1114, 20), // 精鋭打撃
+        (1112, 4),  // 知力強化
+        (1110, 3),  // 筋力強化
+        (1407, 3),  // 集中・詠唱
+    ];
+
+    #[test]
+    fn ability_score_matches_issue5_example() {
+        let sol = build_solution(vec![module(1, 5500101, &VERIFIED_PARTS)], &[], &[]);
+        assert_eq!(sol.link_effect, 93);
+        assert_eq!(sol.ability_score, Some(1585));
+    }
+
+    #[test]
+    fn ability_score_includes_soft_excluded_attrs() {
+        let sol = build_solution(
+            vec![module(1, 5500101, &VERIFIED_PARTS)],
+            &[],
+            &[1409, 1110],
+        );
+        assert!(sol.breakdown.iter().any(|b| b.soft_excluded));
+        assert_eq!(sol.ability_score, Some(1585));
+    }
+
+    #[test]
+    fn ability_score_uses_special_table_for_ultra_attrs() {
+        // 極・ダメージ増強 Lv6: 448、合計 20 の加点は 116。
+        let sol = build_solution(vec![module(1, 5500101, &[(2104, 20)])], &[], &[]);
+        assert_eq!(sol.ability_score, Some(448 + 116));
+        // 極・適応力 Lv1: 14、合計 1 の加点は 5。
+        let sol = build_solution(vec![module(1, 5500101, &[(2105, 1)])], &[], &[]);
+        assert_eq!(sol.ability_score, Some(14 + 5));
+    }
+
+    #[test]
+    fn ability_score_is_none_outside_total_table() {
+        // 合計 120 は表の最終行。
+        let sol = build_solution(vec![module(1, 5500101, &[(1110, 120)])], &[], &[]);
+        assert_eq!(sol.link_effect, 120);
+        assert_eq!(sol.ability_score, Some(254 + 699));
+        // 121 以上は範囲外なので丸めず None。
+        let sol = build_solution(vec![module(1, 5500101, &[(1110, 121)])], &[], &[]);
+        assert_eq!(sol.link_effect, 121);
+        assert_eq!(sol.ability_score, None);
+    }
+
+    #[test]
+    fn ability_score_is_none_for_unknown_attr_with_level() {
+        let sol = build_solution(vec![module(1, 5500101, &[(9999, 5)])], &[], &[]);
+        assert_eq!(sol.ability_score, None);
+    }
+
+    #[test]
+    fn ability_total_table_shape() {
+        assert_eq!(ABILITY_TOTAL_SCORE[0], 0);
+        assert_eq!(ABILITY_TOTAL_SCORE[93], 541);
+        assert!(ABILITY_TOTAL_SCORE.windows(2).all(|w| w[0] <= w[1]));
     }
 
     #[test]

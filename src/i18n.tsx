@@ -118,6 +118,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     "common.close": "閉じる",
     "card.linkEffect": "リンク効果",
     "card.evalLink": "評価スコア",
+    "card.abilityScore": "能力スコア",
+    "card.abilityScoreHelp":
+      "ゲームのデータ表に基づく計算（ソフト除外の属性も含む）。並び順には使いません",
+    "card.abilityScoreUnavailable":
+      "合計値が加点表の範囲外か、未知の属性を含むため算出できません",
     "card.softExcluded": "ソフト除外",
     "card.selectedLv6": "選択Lv6 ×{n}",
     "card.targetsPartial": "目標 {n}/{total} 含む",
@@ -265,6 +270,12 @@ const DICT: Record<Lang, Record<string, string>> = {
     "common.close": "Close",
     "card.linkEffect": "Link Effect",
     "card.evalLink": "Eval Score",
+    // 仮の名称。英語版ゲームでの正式名称は未確認（日本語名「能力スコア」のみ確認済み）。
+    "card.abilityScore": "Ability Score",
+    "card.abilityScoreHelp":
+      "Calculated from the game's data tables (soft-excluded attributes included). Not used for ranking",
+    "card.abilityScoreUnavailable":
+      "Cannot be calculated: the total is outside the score table, or an unknown attribute is included",
     "card.softExcluded": "Soft-excluded",
     "card.selectedLv6": "Target Lv6 ×{n}",
     "card.targetsPartial": "{n}/{total} targets included",

@@ -75,6 +75,14 @@ pub fn attr_name(attr_id: i32) -> Option<&'static str> {
         .map(|&(_, name, ..)| name)
 }
 
+/// 属性ID → 上位属性（極）かどうか（未知は None）。
+pub fn is_special(attr_id: i32) -> Option<bool> {
+    ATTRS
+        .iter()
+        .find(|&&(id, ..)| id == attr_id)
+        .map(|&(_, _, special, _)| special)
+}
+
 /// config_id → モジュール種別の日本語名（未知は None）。
 pub fn module_name(config_id: i32) -> Option<&'static str> {
     MODULES
