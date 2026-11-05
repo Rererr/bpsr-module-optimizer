@@ -254,7 +254,10 @@ export function SolutionCard({
             <div className="flex items-center justify-between">
               <span className="flex min-w-0 items-center gap-1.5">
                 <ModuleIcon configId={m.config_id} size={20} />
-                <span className="truncate text-xs font-semibold">
+                <span
+                  className="truncate text-xs font-semibold"
+                  title={moduleName(m.config_id, m.name)}
+                >
                   {moduleName(m.config_id, m.name)}
                 </span>
               </span>
@@ -278,7 +281,11 @@ export function SolutionCard({
                         : "bg-slate-800/60 text-slate-400"
                     }`}
                   >
-                    <AttrIcon attrId={p.attr_id} size={14} />
+                    <AttrIcon
+                      attrId={p.attr_id}
+                      size={16}
+                      className={hit ? undefined : "opacity-60"}
+                    />
                     {name}
                     <span className="tabular-nums">+{p.value}</span>
                   </span>

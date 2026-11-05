@@ -168,7 +168,11 @@ export function AttributePicker({
                       a.special,
                     )}`}
                   >
-                    <AttrIcon attrId={a.id} size={16} />
+                    <AttrIcon
+                      attrId={a.id}
+                      size={16}
+                      className={st === "exclude" ? "opacity-50 grayscale" : undefined}
+                    />
                     <span className="truncate">{name}</span>
                   </button>
                 );
