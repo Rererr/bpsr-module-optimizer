@@ -1,6 +1,7 @@
 import { Trophy, Star, TriangleAlert } from "lucide-react";
 import type { AttrMeta, Solution } from "../types";
 import { useI18n } from "../i18n";
+import { AttrIcon, ModuleIcon } from "./GameIcon";
 
 interface Props {
   solution: Solution;
@@ -251,8 +252,14 @@ export function SolutionCard({
             className={`rounded-lg border px-2.5 py-1.5 ${qualityColor(m.quality)}`}
           >
             <div className="flex items-center justify-between">
-              <span className="truncate text-xs font-semibold">
-                {moduleName(m.config_id, m.name)}
+              <span className="flex min-w-0 items-center gap-1.5">
+                <ModuleIcon configId={m.config_id} size={20} />
+                <span
+                  className="truncate text-xs font-semibold"
+                  title={moduleName(m.config_id, m.name)}
+                >
+                  {moduleName(m.config_id, m.name)}
+                </span>
               </span>
               <span className="shrink-0 text-[12px] opacity-90">
                 {categoryLabel(m.category)}·Q{m.quality}
@@ -274,6 +281,11 @@ export function SolutionCard({
                         : "bg-slate-800/60 text-slate-400"
                     }`}
                   >
+                    <AttrIcon
+                      attrId={p.attr_id}
+                      size={16}
+                      className={hit ? undefined : "opacity-60"}
+                    />
                     {name}
                     <span className="tabular-nums">+{p.value}</span>
                   </span>

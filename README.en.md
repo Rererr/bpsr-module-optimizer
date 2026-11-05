@@ -210,4 +210,4 @@ This software is provided as-is, **without any warranty of any kind, express or 
 - [WinDivert](https://www.reqrypt.org/windivert.html): used for packet capture. WinDivert is provided under the GNU Lesser General Public License (LGPL).
 - [BPSR-ZDPS](https://github.com/Blue-Protocol-Source/BPSR-ZDPS) (MIT): the ability score point tables are derived from this project's data (`ModEffectTable.json` / `ModLinkEffectTable.json`; Copyright (c) 2025 Blue-Protocol-Source).
 
-In-game names and related rights belong to their respective owners. This is an unofficial, fan-made tool and is not affiliated with the game's operator.
+In-game names and related rights belong to their respective owners. The icon images were extracted from the game client, and the rights to them also belong to their respective owners (these images are not covered by this software's GPL-3.0 license). This is an unofficial, fan-made tool and is not affiliated with the game's operator.
