@@ -151,8 +151,10 @@ export function SolutionCard({
               下に小さく「評価スコア」として併記する（主従を入れ替えないと、ソフト除外を
               使う通常利用で常に「最も目立つ数字がゲーム内と違う値」になってしまうため）。
               ラベルと数字は横並び（ベースライン揃え）にして高さをバッジ列と同じ28pxに収める。
-              縦積みにすると右端だけが2段分の高さになり、ヘッダーに余白が生まれてしまう。 */}
-          <div className="w-[116px] border-l border-slate-800 pl-1.5">
+              縦積みにすると右端だけが2段分の高さになり、ヘッダーに余白が生まれてしまう。
+              能力スコア（表示専用）はその下に小さく併記する。算出不能（null）は「—」。
+              能力スコア追加前のお気に入りにはフィールド自体が無いので、その場合は行ごと出さない。 */}
+          <div className="w-[136px] border-l border-slate-800 pl-1.5">
             <div className="flex h-7 items-center justify-end">
               <span className="flex items-baseline gap-1.5">
                 <span className="text-[12px] leading-none text-slate-400">
@@ -163,6 +165,14 @@ export function SolutionCard({
                 </span>
               </span>
             </div>
+            {solution.ability_score !== undefined && (
+              <div className="mt-0.5 whitespace-nowrap text-right text-[12px] leading-none text-slate-400">
+                {t("card.abilityScore")}{" "}
+                <span className="font-semibold tabular-nums text-slate-300">
+                  {solution.ability_score ?? "—"}
+                </span>
+              </div>
+            )}
             {solution.link_effect !== solution.eval_link && (
               <div className="mt-0.5 text-right text-[12px] leading-none text-slate-400">
                 {t("card.evalLink")}{" "}

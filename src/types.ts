@@ -47,6 +47,9 @@ export interface AttrBreakdown {
 export interface Solution {
   modules: Module[];
   link_effect: number; // リンク効果（全属性値の合計・表示用の真値）。ソフト除外属性の値も含む
+  // 能力スコア（表示専用・ランキングに不使用）。算出できないとき null。
+  // 能力スコア追加前に保存したお気に入りには存在しないため undefined になりうる。
+  ability_score?: number | null;
   eval_link: number; // 評価スコア（ソフト除外を除いた counted 属性値の合計）。ランキングの実体
   lv6_count: number;
   lv5_count: number;

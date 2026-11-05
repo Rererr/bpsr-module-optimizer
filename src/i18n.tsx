@@ -118,6 +118,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "common.close": "閉じる",
     "card.linkEffect": "リンク効果",
     "card.evalLink": "評価スコア",
+    "card.abilityScore": "能力スコア",
     "card.softExcluded": "ソフト除外",
     "card.selectedLv6": "選択Lv6 ×{n}",
     "card.targetsPartial": "目標 {n}/{total} 含む",
@@ -265,6 +266,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     "common.close": "Close",
     "card.linkEffect": "Link Effect",
     "card.evalLink": "Eval Score",
+    // 仮の名称。英語版ゲームでの正式名称は未確認（日本語名「能力スコア」のみ確認済み）。
+    "card.abilityScore": "Ability Score",
     "card.softExcluded": "Soft-excluded",
     "card.selectedLv6": "Target Lv6 ×{n}",
     "card.targetsPartial": "{n}/{total} targets included",
